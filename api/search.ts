@@ -1,0 +1,40 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { search, searchInEvent, DIVISIONS, type Division } from '../lib/hyrox.js';
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const surname = String(req.query.surname ?? '').trim();
+  const division = String(req.query.division ?? 'open') as Division;
+  const eventId = req.query.eventId ? String(req.query.eventId) : undefined;
+  const sex = req.query.sex ? (String(req.query.sex).toUpperCase() as 'M' | 'W') : undefined;
+  const ageClass = req.query.ageClass ? String(req.query.ageClass) : undefined;
+  const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 100);
+
+  if (surname.length < 2) {
+    return res.status(400).json({ error: 'surname requerido (mínimo 2 caracteres)' });
+  }
+  if (!(division in DIVISIONS)) {
+    return res.status(400).json({ error: `division inválida. Válidas: ${Object.keys(DIVISIONS).join(', ')}` });
+  }
+
+  // En dobles y relevos el ranking all-time IGNORA search[name]:
+  // hay que acotar por evento o no se encuentra nada.
+  const needsEvent = division === 'doubles' || division === 'pro_doubles' || division === 'relay';
+  if (needsEvent && !eventId) {
+    return res.status(400).json({
+      error: 'En dobles y relevos hace falta eventId: el ranking all-time no admite búsqueda por nombre.',
+      hint: 'Pide al usuario la sede y el día, y pasa el eventId de ese evento (p. ej. LR3MS4JI1760).',
+    });
+  }
+
+  try {
+    const hits = eventId
+      ? await searchInEvent({ surname, eventId, division, limit })
+      : await search({ surname, division, sex, ageClass, limit });
+
+    // Las carreras pasadas no cambian, pero pueden aparecer nuevas.
+    res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
+    return res.status(200).json({ query: { surname, division, eventId, sex, ageClass }, count: hits.length, hits });
+  } catch (err) {
+    return res.status(502).json({ error: 'upstream', detail: String((err as Error).message) });
+  }
+}
