@@ -74,7 +74,10 @@ async function listEvents(season: string, rate: number): Promise<{ code: string;
   $('select[name="event"] option').each((_, el) => {
     const code = ($(el).attr('value') ?? '').trim();
     const label = $(el).text().replace(/\s+/g, ' ').trim();
-    if (code) events.push({ code, label });
+    // Los *_OVERALL son rankings agregados por sede, no resultados fuente:
+    // repiten a los mismos atletas con otro idp y su paginacion da la vuelta
+    // en lugar de acabar (30.000 filas = 7.500 registros x4). Fuera.
+    if (code && !code.endsWith('_OVERALL')) events.push({ code, label });
   });
   return events;
 }
@@ -100,16 +103,31 @@ async function main() {
 
     for (const [i, event] of pending.entries()) {
       let rows = 0;
+      const seen = new Set<string>();
       for (let page = 1; page <= MAX_PAGES; page++) {
         const url = `${BASE}/${season}/?pid=list&event=${event.code}&num_results=${PAGE_SIZE}&page=${page}`;
         const parsed = parseListRows(await get(url, minInterval));
         if (parsed.length === 0) break;
 
-        const lines = parsed.map((row) => JSON.stringify({
+        // Hay eventos cuyo listado repite cada fila varias veces en el propio
+        // HTML (100 filas para 30 idps). Nos quedamos con la primera de cada.
+        // Marcar dentro del mismo filter: si no, dos copias del mismo idp en
+        // una misma pagina pasan las dos (se comparan contra un seen sin tocar).
+        const fresh = parsed.filter((row) => {
+          if (seen.has(row.idp)) return false;
+          seen.add(row.idp);
+          return true;
+        });
+
+        // Y si una pagina entera no aporta nadie nuevo, el listado esta
+        // ciclando: cortamos en vez de gastar hasta MAX_PAGES.
+        if (fresh.length === 0) break;
+
+        const lines = fresh.map((row) => JSON.stringify({
           season, eventCode: event.code, eventLabel: event.label, ...row,
         }));
         appendFileSync(outFile, lines.join('\n') + '\n');
-        rows += parsed.length;
+        rows += fresh.length;
         if (parsed.length < PAGE_SIZE) break;
       }
 

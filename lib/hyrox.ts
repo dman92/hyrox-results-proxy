@@ -106,6 +106,23 @@ export function canonicalKey(label: string): string {
   return l.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 }
 
+/**
+ * Algunos eventos traen el nombre de equipo con cada miembro repetido, tal cual
+ * en el HTML de origen: "Lee Perfect, Lee Perfect, Rory Crighton, Rory Crighton".
+ * Colapsa los segmentos repetidos conservando el orden.
+ */
+export function dedupeNameParts(name: string): string {
+  const parts = name.split(',').map((p) => p.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const kept = parts.filter((p) => {
+    const key = p.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return kept.length === parts.length ? name : kept.join(', ');
+}
+
 /** "Dearden, Jake (ENG)" -> { name, nationality }. Sin paréntesis, nacionalidad null. */
 function splitNationality(v: string): { name: string; nationality: string | null } {
   const m = v.match(/^(.*?)\s*\(([A-Z]{2,3})\)\s*$/);
@@ -245,7 +262,7 @@ export function parseListRows(html: string): ListRow[] {
     if (!idp) return;
 
     // Igual que en el detalle, el nombre puede venir como "Apellido, Nombre (USA)".
-    const fullname = splitNationality($a.text().trim());
+    const fullname = splitNationality(dedupeNameParts($a.text().trim()));
     const cityYear = $row.find('.type-field').first().text().trim();
     const yearMatch = cityYear.match(/\b(20\d{2})\b/);
     const totalTime = $row.find('.type-time').first().text().trim() || null;

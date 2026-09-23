@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseSearch, parseDetail, hmsToSec, canonicalKey } from '../lib/hyrox.ts';
+import { parseSearch, parseDetail, hmsToSec, canonicalKey, dedupeNameParts } from '../lib/hyrox.ts';
 
 const fx = (n: string) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8');
 
@@ -136,4 +136,19 @@ test('parseDetail (dobles por evento) ignora la tabla de horas de reloj', () => 
   assert.equal(d.members.length, 2);
   assert.equal(d.name, 'Lee, JooYeong / Jang, GyuChang');
   assert.equal(d.rankAgeGroup, 1);
+});
+
+test('dedupeNameParts colapsa miembros repetidos del origen', () => {
+  // Hay eventos cuyo HTML trae cada miembro dos veces dentro del mismo <a>.
+  assert.equal(
+    dedupeNameParts('Lee Perfect, Lee Perfect, Rory Crighton, Rory Crighton'),
+    'Lee Perfect, Rory Crighton',
+  );
+  // Un equipo normal no se toca, ni aunque compartan apellido.
+  assert.equal(
+    dedupeNameParts('Ben Sutherland, Harry Sutherland'),
+    'Ben Sutherland, Harry Sutherland',
+  );
+  // "Apellido, Nombre" de individual tampoco: son dos segmentos distintos.
+  assert.equal(dedupeNameParts('Weeks, Lauren'), 'Weeks, Lauren');
 });
