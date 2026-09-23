@@ -23,6 +23,11 @@ a una `Simulation` y a sus PR por estación.
 → { count: 19, hits: [ { idp, rank, name, nationality, city, year, totalTime, totalSec } ] }
 ```
 
+### `GET /api/health`
+
+Sin parámetros. Devuelve el commit y el mensaje del build desplegado, para saber
+qué versión está sirviendo sin tener que inferirlo del comportamiento.
+
 ### `GET /api/athlete`
 
 | Parámetro | Req. | Descripción |
