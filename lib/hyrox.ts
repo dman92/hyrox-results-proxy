@@ -109,12 +109,17 @@ export class UpstreamTimeout extends Error {
   constructor() { super('results.hyrox.com no respondió a tiempo'); this.name = 'UpstreamTimeout'; }
 }
 
-// results.hyrox.com sirve la primera petición de una consulta en frío en ~25-30s
-// y las siguientes en <1s (su propio x-results-cache). 20s se quedaba corto y
-// devolvía 502 en el primer intento; con 45s la petición fría completa.
-const UPSTREAM_TIMEOUT_MS = 45_000;
+// Una consulta en frío hace que results.hyrox.com tarde ~25-30s o devuelva un
+// 504 suyo; en cuanto entra en su x-results-cache, responde en <1s. Por eso dos
+// intentos cortos funcionan mejor que uno largo: el primero calienta su caché.
+// 28s x 2 = 56s, dentro del maxDuration de 60 que fija vercel.json.
+const UPSTREAM_TIMEOUT_MS = 28_000;
+const UPSTREAM_ATTEMPTS = 2;
 
-async function get(url: string): Promise<string> {
+/** 502/503/504 del origen son "está ocupado", no "no existe": se reintentan. */
+const GATEWAY_STATUSES = new Set([502, 503, 504]);
+
+async function attempt(url: string): Promise<string> {
   let res: Response;
   try {
     res = await fetch(url, {
@@ -127,8 +132,22 @@ async function get(url: string): Promise<string> {
     }
     throw err;
   }
+  if (GATEWAY_STATUSES.has(res.status)) throw new UpstreamTimeout();
   if (!res.ok) throw new Error(`upstream ${res.status} for ${url}`);
   return res.text();
+}
+
+async function get(url: string): Promise<string> {
+  let last: unknown;
+  for (let i = 0; i < UPSTREAM_ATTEMPTS; i++) {
+    try {
+      return await attempt(url);
+    } catch (err) {
+      if (!(err instanceof UpstreamTimeout)) throw err;
+      last = err;
+    }
+  }
+  throw last;
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {

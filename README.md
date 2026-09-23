@@ -80,10 +80,11 @@ pago (p. ej. hyroxresultapi.com) es reescribir ese fichero, sin tocar la app.
 - Hay **dos plantillas de detalle** distintas. La de evento nombra la sede como
   `Race: "2026 Bangkok"` (año delante), deja el total fuera de la tabla de splits
   y añade una tabla de paso por roxzone con horas de reloj que hay que ignorar.
-- **La primera petición de una consulta en frío tarda ~25-30s**; las siguientes,
-  ~0,3s (su propio `x-results-cache`). De ahí los 45s de timeout y `maxDuration: 60`.
-  Si aun así expira, la respuesta es `504` con `retryable: true` y `Retry-After`:
-  el cliente debe reintentar, porque esa primera petición ya calentó su caché.
+- **La primera petición de una consulta en frío tarda ~25-30s, o devuelve un 504
+  del propio results.hyrox.com**; las siguientes, ~0,3s (su `x-results-cache`).
+  Por eso se hacen dos intentos de 28s en vez de uno largo: el primero calienta
+  su caché aunque falle. Si los dos fallan, la respuesta es `504` con
+  `retryable: true` y `Retry-After`, y el cliente debe reintentar.
 
 ## Desarrollo
 
