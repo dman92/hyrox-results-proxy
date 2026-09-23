@@ -102,7 +102,10 @@ async function main() {
     console.log(`\n${season}: ${events.length} eventos-división (${pending.length} pendientes)`);
 
     for (const [i, event] of pending.entries()) {
-      let rows = 0;
+      // Acumulamos el evento entero y lo volcamos al terminar. Si se cancela a
+      // mitad no queda nada escrito, y al reanudar no se duplica: el checkpoint
+      // solo se guarda cuando el evento esta completo.
+      const buffer: string[] = [];
       const seen = new Set<string>();
       for (let page = 1; page <= MAX_PAGES; page++) {
         const url = `${BASE}/${season}/?pid=list&event=${event.code}&num_results=${PAGE_SIZE}&page=${page}`;
@@ -123,16 +126,15 @@ async function main() {
         // ciclando: cortamos en vez de gastar hasta MAX_PAGES.
         if (fresh.length === 0) break;
 
-        const lines = fresh.map((row) => JSON.stringify({
-          season, eventCode: event.code, eventLabel: event.label, ...row,
-        }));
-        appendFileSync(outFile, lines.join('\n') + '\n');
-        rows += fresh.length;
+        for (const row of fresh) {
+          buffer.push(JSON.stringify({ season, eventCode: event.code, eventLabel: event.label, ...row }));
+        }
         if (parsed.length < PAGE_SIZE) break;
       }
 
-      done[event.code] = rows;
-      totalRows += rows;
+      if (buffer.length > 0) appendFileSync(outFile, buffer.join('\n') + '\n');
+      done[event.code] = buffer.length;
+      totalRows += buffer.length;
       writeFileSync(stateFile, JSON.stringify(done, null, 0));
 
       const elapsed = (Date.now() - startedAt) / 1000;
