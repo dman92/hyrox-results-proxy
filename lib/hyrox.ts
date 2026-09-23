@@ -8,7 +8,7 @@ const DEFAULT_SEASON = 'season-9';
 // Es decir, el sitio filtra clientes automatizados de forma deliberada.
 // Tenlo en cuenta al decidir si este proxy es la vía definitiva o solo el plan A:
 // lib/hyrox.ts es intercambiable por una implementación contra una API de pago.
-const USER_AGENT =
+export const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 ' +
   '(KHTML, like Gecko) Version/17.0 Safari/605.1.15';
 
@@ -219,14 +219,17 @@ export function detailUrl(
   return `${BASE}/${season}/?${qs}`;
 }
 
-export function parseSearch(
-  html: string,
-  division: Division,
-  eventId: string | null = null,
-  season: string | null = null,
-): RaceHit[] {
+/** Una fila de listado, sin el contexto (división/evento/temporada) que la envuelve. */
+export type ListRow = Omit<RaceHit, 'division' | 'eventId' | 'season'>;
+
+/**
+ * Filas de cualquier listado de mika: ranking all-time o lista por evento.
+ * Separado de parseSearch para que la ingesta pueda recorrer eventos cuyo
+ * prefijo de división no está en DIVISIONS (HD1, HA, HY3, THD, WCHE...).
+ */
+export function parseListRows(html: string): ListRow[] {
   const $ = cheerio.load(html);
-  const hits: RaceHit[] = [];
+  const rows: ListRow[] = [];
 
   $('li.list-group-item.row').each((_, el) => {
     const $row = $(el);
@@ -248,11 +251,8 @@ export function parseSearch(
     const totalTime = $row.find('.type-time').first().text().trim() || null;
     const rankText = $row.find('.type-place.place-primary').first().text().trim();
 
-    hits.push({
+    rows.push({
       idp,
-      division,
-      eventId,
-      season,
       rank: /^\d+$/.test(rankText) ? parseInt(rankText, 10) : null,
       name: fullname.name,
       nationality:
@@ -267,7 +267,16 @@ export function parseSearch(
     });
   });
 
-  return hits;
+  return rows;
+}
+
+export function parseSearch(
+  html: string,
+  division: Division,
+  eventId: string | null = null,
+  season: string | null = null,
+): RaceHit[] {
+  return parseListRows(html).map((row) => ({ ...row, division, eventId, season }));
 }
 
 export function parseDetail(html: string, idp: string, division: Division): RaceDetail {
