@@ -89,3 +89,16 @@ test('un nombre ilegible invalida el parseo', () => {
   assert.equal(d.name, null);
   assert.equal(d.validation.ok, false);
 });
+
+test('parseSearch separa la nacionalidad pegada al nombre', () => {
+  // Algunas filas traen "Weeks, Lauren (USA)" en vez de nombre y bandera aparte.
+  const hits = parseSearch(fx('search-name-with-nationality.html'), 'pro');
+  assert.ok(hits.length > 0);
+
+  for (const h of hits) {
+    assert.ok(!h.name.includes('('), `nacionalidad sin separar: ${h.name}`);
+    assert.match(h.nationality ?? '', /^[A-Z]{2,3}$/);
+  }
+  assert.equal(hits[0].name, 'Weeks, Lauren');
+  assert.equal(hits[0].nationality, 'USA');
+});

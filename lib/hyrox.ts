@@ -134,6 +134,16 @@ function buildQuery(params: Record<string, string | number | undefined>): string
  * Busca por APELLIDO en el ranking all-time (cross-evento y cross-temporada).
  * Ojo: en dobles/relevos mika ignora search[name] aquí -> usar searchInEvent().
  */
+/**
+ * mika ignora num_results con valores arbitrarios (pedir 3 devuelve 12), así que
+ * pedimos uno de los que sí respeta y recortamos al limit real en parseSearch.
+ */
+function pageSize(limit: number): 25 | 50 | 100 {
+  if (limit <= 25) return 25;
+  if (limit <= 50) return 50;
+  return 100;
+}
+
 export function searchUrl(opts: {
   surname: string; division?: Division; sex?: 'M' | 'W'; ageClass?: string;
   limit?: number; season?: string;
@@ -142,7 +152,7 @@ export function searchUrl(opts: {
   const qs = buildQuery({
     pid: 'list_overall',
     event: `${div}_HYROXOVERALL`,
-    num_results: opts.limit ?? 50,
+    num_results: pageSize(opts.limit ?? 50),
     'search[name]': opts.surname,
     'search[sex]': opts.sex,
     'search[age_class]': opts.ageClass,
@@ -158,7 +168,7 @@ export function searchInEventUrl(opts: {
   const qs = buildQuery({
     pid: 'list',
     event: `${div}_${opts.eventId}`,
-    num_results: opts.limit ?? 50,
+    num_results: pageSize(opts.limit ?? 50),
     'search[name]': opts.surname,
   });
   return `${BASE}/${opts.season ?? DEFAULT_SEASON}/?${qs}`;
@@ -191,6 +201,8 @@ export function parseSearch(html: string, division: Division): RaceHit[] {
     const idp = new URLSearchParams(href.replace(/^\?/, '').replace(/&amp;/g, '&')).get('idp');
     if (!idp) return;
 
+    // Igual que en el detalle, el nombre puede venir como "Apellido, Nombre (USA)".
+    const fullname = splitNationality($a.text().trim());
     const cityYear = $row.find('.type-field').first().text().trim();
     const yearMatch = cityYear.match(/\b(20\d{2})\b/);
     const totalTime = $row.find('.type-time').first().text().trim() || null;
@@ -200,10 +212,11 @@ export function parseSearch(html: string, division: Division): RaceHit[] {
       idp,
       division,
       rank: /^\d+$/.test(rankText) ? parseInt(rankText, 10) : null,
-      name: $a.text().trim(),
+      name: fullname.name,
       nationality:
         $row.find('.type-nation_flag .nation__abbr').text().trim() ||
-        $row.find('.type-nation_flag img').attr('alt') || null,
+        $row.find('.type-nation_flag img').attr('alt') ||
+        fullname.nationality || null,
       city: yearMatch ? cityYear.replace(yearMatch[0], '').trim() : cityYear || null,
       year: yearMatch ? parseInt(yearMatch[1], 10) : null,
       totalTime,
@@ -304,12 +317,14 @@ export function parseDetail(html: string, idp: string, division: Division): Race
 
 export async function search(opts: Parameters<typeof searchUrl>[0]): Promise<RaceHit[]> {
   const division = opts.division ?? 'open';
-  return parseSearch(await get(searchUrl(opts)), division);
+  const hits = parseSearch(await get(searchUrl(opts)), division);
+  return opts.limit ? hits.slice(0, opts.limit) : hits;
 }
 
 export async function searchInEvent(opts: Parameters<typeof searchInEventUrl>[0]): Promise<RaceHit[]> {
   const division = opts.division ?? 'doubles';
-  return parseSearch(await get(searchInEventUrl(opts)), division);
+  const hits = parseSearch(await get(searchInEventUrl(opts)), division);
+  return opts.limit ? hits.slice(0, opts.limit) : hits;
 }
 
 export async function detail(idp: string, division: Division = 'open'): Promise<RaceDetail> {
