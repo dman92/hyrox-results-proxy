@@ -35,10 +35,13 @@ qué versión está sirviendo sin tener que inferirlo del comportamiento.
 | `idp` | sí | Identificador devuelto por `/api/search` |
 | `division` | no | Debe coincidir con la de la búsqueda |
 | `eventId` | * | **Devuelve el `eventId` que traiga el hit**, si no es `null` |
+| `season` | * | **Devuelve la `season` que traiga el hit**, si no es `null` |
 
-> Cada hit de `/api/search` incluye un `eventId`. Si no es `null`, hay que
-> pasarlo de vuelta aquí: un `idp` de una lista por evento no resuelve contra la
-> URL de detalle del ranking all-time, y al revés tampoco. Devuélvelo tal cual.
+> Cada hit de `/api/search` incluye `eventId` y `season`. Si no son `null`, hay
+> que pasarlos de vuelta aquí: un `idp` de una lista por evento no resuelve
+> contra la URL de detalle del ranking all-time, y consultar una carrera de
+> `season-8` bajo `season-9` devuelve **200 con la ficha vacía**, no un error.
+> Devuélvelos tal cual.
 
 Devuelve cabecera (nombre, nacionalidad, grupo de edad, dorsal, sede, año, bonus,
 penalización, motivo de descalificación, puesto por género y por grupo de edad),
@@ -77,6 +80,12 @@ pago (p. ej. hyroxresultapi.com) es reescribir ese fichero, sin tocar la app.
 - **En dobles los splits son del equipo**, no por integrante. results.hyrox.com no
   registra quién hizo qué dentro de cada estación. Sí devuelve `members[]` con el
   nombre y la nacionalidad de cada integrante.
+- **El buscador de mika solo indexa al primer miembro del equipo.** Comprobado:
+  en el equipo `Brent Lee, Ritzy Amor Ectin`, buscar "Ectin" devuelve 0 filas y
+  "Lee" devuelve 13. Quien corriera como segundo no se encuentra por su propio
+  apellido, ni aquí ni en la web oficial. Afecta a la mitad de los dobles.
+- En la plantilla por evento **la sede no aparece en la página**: `city` y `year`
+  salen `null`. El cliente debe usar el evento que ya eligió.
 - Hay **dos plantillas de detalle** distintas. La de evento nombra la sede como
   `Race: "2026 Bangkok"` (año delante), deja el total fuera de la tabla de splits
   y añade una tabla de paso por roxzone con horas de reloj que hay que ignorar.

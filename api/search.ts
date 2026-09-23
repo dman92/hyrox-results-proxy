@@ -5,6 +5,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const surname = String(req.query.surname ?? '').trim();
   const division = String(req.query.division ?? 'open') as Division;
   const eventId = req.query.eventId ? String(req.query.eventId) : undefined;
+  const season = req.query.season ? String(req.query.season) : undefined;
   const sex = req.query.sex ? (String(req.query.sex).toUpperCase() as 'M' | 'W') : undefined;
   const ageClass = req.query.ageClass ? String(req.query.ageClass) : undefined;
   const limit = Math.min(parseInt(String(req.query.limit ?? '50'), 10) || 50, 100);
@@ -28,7 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const hits = eventId
-      ? await searchInEvent({ surname, eventId, division, limit })
+      ? await searchInEvent({ surname, eventId, division, limit, season })
       : await search({ surname, division, sex, ageClass, limit });
 
     // Las carreras pasadas no cambian, pero pueden aparecer nuevas.

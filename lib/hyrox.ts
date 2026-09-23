@@ -31,6 +31,13 @@ export interface RaceHit {
    * contra la URL de detalle del all-time, y viceversa.
    */
   eventId: string | null;
+  /**
+   * Temporada de la URL de la que salió el idp. Solo importa en búsquedas por
+   * evento: el detalle de una carrera de season-8 consultado bajo season-9
+   * devuelve 200 con la ficha vacía, no un error. Hay que devolverla igual que
+   * el eventId. null = ranking all-time, que resuelve bajo la temporada actual.
+   */
+  season: string | null;
   rank: number | null;
   name: string;
   nationality: string | null;
@@ -212,7 +219,12 @@ export function detailUrl(
   return `${BASE}/${season}/?${qs}`;
 }
 
-export function parseSearch(html: string, division: Division, eventId: string | null = null): RaceHit[] {
+export function parseSearch(
+  html: string,
+  division: Division,
+  eventId: string | null = null,
+  season: string | null = null,
+): RaceHit[] {
   const $ = cheerio.load(html);
   const hits: RaceHit[] = [];
 
@@ -240,6 +252,7 @@ export function parseSearch(html: string, division: Division, eventId: string | 
       idp,
       division,
       eventId,
+      season,
       rank: /^\d+$/.test(rankText) ? parseInt(rankText, 10) : null,
       name: fullname.name,
       nationality:
@@ -377,7 +390,8 @@ export async function search(opts: Parameters<typeof searchUrl>[0]): Promise<Rac
 
 export async function searchInEvent(opts: Parameters<typeof searchInEventUrl>[0]): Promise<RaceHit[]> {
   const division = opts.division ?? 'doubles';
-  const hits = parseSearch(await get(searchInEventUrl(opts)), division, opts.eventId);
+  const season = opts.season ?? DEFAULT_SEASON;
+  const hits = parseSearch(await get(searchInEventUrl(opts)), division, opts.eventId, season);
   return opts.limit ? hits.slice(0, opts.limit) : hits;
 }
 
@@ -385,6 +399,7 @@ export async function detail(
   idp: string,
   division: Division = 'open',
   eventId: string | null = null,
+  season: string = DEFAULT_SEASON,
 ): Promise<RaceDetail> {
-  return parseDetail(await get(detailUrl(idp, division, eventId)), idp, division);
+  return parseDetail(await get(detailUrl(idp, division, eventId, season)), idp, division);
 }

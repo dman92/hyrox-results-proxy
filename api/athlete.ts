@@ -6,12 +6,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const division = String(req.query.division ?? 'open') as Division;
   // Si el idp vino de una búsqueda por evento, hay que devolver ese eventId.
   const eventId = req.query.eventId ? String(req.query.eventId) : null;
+  const season = req.query.season ? String(req.query.season) : undefined;
 
   if (!/^[A-Za-z0-9]{6,}$/.test(idp)) return res.status(400).json({ error: 'idp inválido' });
+  if (season !== undefined && !/^season-\d{1,2}$/.test(season)) {
+    return res.status(400).json({ error: 'season inválida (formato: season-8)' });
+  }
   if (!(division in DIVISIONS)) return res.status(400).json({ error: 'division inválida' });
 
   try {
-    const race = await detail(idp, division, eventId);
+    const race = season
+      ? await detail(idp, division, eventId, season)
+      : await detail(idp, division, eventId);
 
     if (!race.validation.ok) {
       // No devolvemos datos a medias: mejor fallar ruidosamente que importar basura.
