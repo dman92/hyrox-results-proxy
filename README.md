@@ -34,6 +34,11 @@ qué versión está sirviendo sin tener que inferirlo del comportamiento.
 |---|---|---|
 | `idp` | sí | Identificador devuelto por `/api/search` |
 | `division` | no | Debe coincidir con la de la búsqueda |
+| `eventId` | * | **Devuelve el `eventId` que traiga el hit**, si no es `null` |
+
+> Cada hit de `/api/search` incluye un `eventId`. Si no es `null`, hay que
+> pasarlo de vuelta aquí: un `idp` de una lista por evento no resuelve contra la
+> URL de detalle del ranking all-time, y al revés tampoco. Devuélvelo tal cual.
 
 Devuelve cabecera (nombre, nacionalidad, grupo de edad, dorsal, sede, año, bonus,
 penalización, motivo de descalificación, puesto por género y por grupo de edad),
@@ -70,7 +75,11 @@ pago (p. ej. hyroxresultapi.com) es reescribir ese fichero, sin tocar la app.
   all-time ignora `search[name]`. Hay que acotar por `eventId`, así que la UI tiene
   que pedir sede y día. En individual no hace falta.
 - **En dobles los splits son del equipo**, no por integrante. results.hyrox.com no
-  registra quién hizo qué dentro de cada estación.
+  registra quién hizo qué dentro de cada estación. Sí devuelve `members[]` con el
+  nombre y la nacionalidad de cada integrante.
+- Hay **dos plantillas de detalle** distintas. La de evento nombra la sede como
+  `Race: "2026 Bangkok"` (año delante), deja el total fuera de la tabla de splits
+  y añade una tabla de paso por roxzone con horas de reloj que hay que ignorar.
 - **La primera petición de una consulta en frío tarda ~25-30s**; las siguientes,
   ~0,3s (su propio `x-results-cache`). De ahí los 45s de timeout y `maxDuration: 60`.
   Si aun así expira, la respuesta es `504` con `retryable: true` y `Retry-After`:

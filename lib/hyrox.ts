@@ -25,11 +25,18 @@ export type Division = keyof typeof DIVISIONS;
 export interface RaceHit {
   idp: string;
   division: Division;
+  /**
+   * Evento del que salió el idp, o null si vino del ranking all-time. Hay que
+   * devolverlo tal cual a /api/athlete: un idp de lista por evento no resuelve
+   * contra la URL de detalle del all-time, y viceversa.
+   */
+  eventId: string | null;
   rank: number | null;
   name: string;
   nationality: string | null;
   city: string | null;
   year: number | null;
+  ageGroup: string | null;
   totalTime: string | null;
   totalSec: number | null;
 }
@@ -174,18 +181,19 @@ export function searchInEventUrl(opts: {
   return `${BASE}/${opts.season ?? DEFAULT_SEASON}/?${qs}`;
 }
 
-export function detailUrl(idp: string, division: Division = 'open', season = DEFAULT_SEASON): string {
-  const qs = buildQuery({
-    content: 'detail',
-    pid: 'list_overall',
-    idp,
-    lang: 'EN_CAP',
-    event: `${DIVISIONS[division]}_HYROXOVERALL`,
-  });
+export function detailUrl(
+  idp: string,
+  division: Division = 'open',
+  eventId: string | null = null,
+  season = DEFAULT_SEASON,
+): string {
+  const pid = eventId ? 'list' : 'list_overall';
+  const event = eventId ? `${DIVISIONS[division]}_${eventId}` : `${DIVISIONS[division]}_HYROXOVERALL`;
+  const qs = buildQuery({ content: 'detail', pid, idp, lang: 'EN_CAP', event });
   return `${BASE}/${season}/?${qs}`;
 }
 
-export function parseSearch(html: string, division: Division): RaceHit[] {
+export function parseSearch(html: string, division: Division, eventId: string | null = null): RaceHit[] {
   const $ = cheerio.load(html);
   const hits: RaceHit[] = [];
 
@@ -194,7 +202,8 @@ export function parseSearch(html: string, division: Division): RaceHit[] {
     // Las etiquetas móviles duplican el texto de cada campo: fuera antes de leer.
     $row.find('.list-label').remove();
 
-    const $a = $row.find('h4.type-fullname a').first();
+    // Individual usa type-fullname; dobles y relevos, type-relay_member.
+    const $a = $row.find('h4.type-fullname a, h4.type-relay_member a').first();
     const href = $a.attr('href');
     if (!href) return; // fila de cabecera, no un atleta
 
@@ -211,6 +220,7 @@ export function parseSearch(html: string, division: Division): RaceHit[] {
     hits.push({
       idp,
       division,
+      eventId,
       rank: /^\d+$/.test(rankText) ? parseInt(rankText, 10) : null,
       name: fullname.name,
       nationality:
@@ -219,6 +229,7 @@ export function parseSearch(html: string, division: Division): RaceHit[] {
         fullname.nationality || null,
       city: yearMatch ? cityYear.replace(yearMatch[0], '').trim() : cityYear || null,
       year: yearMatch ? parseInt(yearMatch[1], 10) : null,
+      ageGroup: $row.find('.type-age_class').first().text().trim() || null,
       totalTime,
       totalSec: totalTime ? hmsToSec(totalTime) : null,
     });
@@ -234,8 +245,14 @@ export function parseDetail(html: string, idp: string, division: Division): Race
   const info: Record<string, string> = {};
   const splits: Split[] = [];
 
-  $('table tr').each((_, tr) => {
-    const cells = $(tr).find('th, td').map((__, c) => $(c).text().replace(/\s+/g, ' ').trim()).get();
+  $('table').each((_, table) => {
+    const $table = $(table);
+    // La página de detalle por evento añade una tabla de paso por la roxzone
+    // con horas de reloj ("Rox In | 08:04:15"). No son duraciones ni splits.
+    if (/time of day/i.test($table.find('tr').first().text())) return;
+
+    $table.find('tr').each((__, tr) => {
+    const cells = $(tr).find('th, td').map((___, c) => $(c).text().replace(/\s+/g, ' ').trim()).get();
     if (cells.length === 2 && cells[0] && cells[1]) {
       info[cells[0]] = cells[1];
       return;
@@ -255,6 +272,7 @@ export function parseDetail(html: string, idp: string, division: Division): Race
         });
       }
     }
+    });
   });
 
   const members: { name: string; nationality: string | null }[] = [];
@@ -266,15 +284,32 @@ export function parseDetail(html: string, idp: string, division: Division): Race
   // Las páginas de detalle no usan siempre la misma etiqueta: unas traen
   // "Name" + "Nat" por separado y otras un "Athlete" con la nacionalidad dentro.
   const athleteRaw = info['Name'] ?? info['Athlete'] ?? info['Member'] ?? null;
-  const athlete = athleteRaw ? splitNationality(athleteRaw) : null;
+  const athlete = athleteRaw
+    ? splitNationality(athleteRaw)
+    : members.length > 0
+      // Por evento, el equipo no tiene fila propia: se compone con sus miembros.
+      // Con " / " y no ", ", porque cada nombre ya lleva su propia coma.
+      ? { name: members.map((m) => m.name).join(' / '), nationality: null }
+      : null;
 
   const num = (k: string): number | null => {
     const v = info[k];
     return v && /^\d+$/.test(v) ? parseInt(v, 10) : null;
   };
 
-  const cityYear = info['City'] ?? '';
+  // All-time lo llama "City" ("Bangkok 2026"); por evento, "Race" ("2026 Bangkok").
+  // En all-time "Race" vale "General Ranking", así que solo sirve si lleva año.
+  const raceField = info['Race'] ?? '';
+  const cityYear = info['City'] ?? (/\b20\d{2}\b/.test(raceField) ? raceField : '');
   const yearMatch = cityYear.match(/\b(20\d{2})\b/);
+
+  // Por evento el total no está en la tabla de splits, sino como "Overall Time".
+  if (!splits.some((sp) => sp.key === 'total') && info['Overall Time']) {
+    const seconds = hmsToSec(info['Overall Time']);
+    if (seconds !== null) {
+      splits.push({ key: 'total', label: 'Overall Time', time: info['Overall Time'], seconds, place: null });
+    }
+  }
 
   const runSum = splits
     .filter((s) => /^run_\d+$/.test(s.key))
@@ -323,10 +358,14 @@ export async function search(opts: Parameters<typeof searchUrl>[0]): Promise<Rac
 
 export async function searchInEvent(opts: Parameters<typeof searchInEventUrl>[0]): Promise<RaceHit[]> {
   const division = opts.division ?? 'doubles';
-  const hits = parseSearch(await get(searchInEventUrl(opts)), division);
+  const hits = parseSearch(await get(searchInEventUrl(opts)), division, opts.eventId);
   return opts.limit ? hits.slice(0, opts.limit) : hits;
 }
 
-export async function detail(idp: string, division: Division = 'open'): Promise<RaceDetail> {
-  return parseDetail(await get(detailUrl(idp, division)), idp, division);
+export async function detail(
+  idp: string,
+  division: Division = 'open',
+  eventId: string | null = null,
+): Promise<RaceDetail> {
+  return parseDetail(await get(detailUrl(idp, division, eventId)), idp, division);
 }

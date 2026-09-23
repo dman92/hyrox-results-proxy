@@ -4,12 +4,14 @@ import { detail, DIVISIONS, type Division, UpstreamTimeout } from '../lib/hyrox.
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const idp = String(req.query.idp ?? '').trim();
   const division = String(req.query.division ?? 'open') as Division;
+  // Si el idp vino de una búsqueda por evento, hay que devolver ese eventId.
+  const eventId = req.query.eventId ? String(req.query.eventId) : null;
 
   if (!/^[A-Za-z0-9]{6,}$/.test(idp)) return res.status(400).json({ error: 'idp inválido' });
   if (!(division in DIVISIONS)) return res.status(400).json({ error: 'division inválida' });
 
   try {
-    const race = await detail(idp, division);
+    const race = await detail(idp, division, eventId);
 
     if (!race.validation.ok) {
       // No devolvemos datos a medias: mejor fallar ruidosamente que importar basura.

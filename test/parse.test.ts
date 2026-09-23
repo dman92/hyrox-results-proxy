@@ -102,3 +102,38 @@ test('parseSearch separa la nacionalidad pegada al nombre', () => {
   assert.equal(hits[0].name, 'Weeks, Lauren');
   assert.equal(hits[0].nationality, 'USA');
 });
+
+test('parseSearch lee las filas de dobles (type-relay_member)', () => {
+  // La lista por evento nombra la fila con type-relay_member en vez de
+  // type-fullname: con el selector antiguo devolvía 0 equipos.
+  const hits = parseSearch(fx('search-doubles-in-event.html'), 'doubles');
+
+  assert.ok(hits.length > 0, 'no encontró ningún equipo');
+  const h = hits[0];
+  assert.match(h.name, /,/);                        // "Nombre1, Nombre2"
+  assert.ok(h.name.toLowerCase().includes('lee'));  // la búsqueda filtró
+  assert.match(h.idp, /^[A-Za-z0-9]+$/);
+  assert.ok(h.totalSec && h.totalSec > 1800);
+  assert.match(h.ageGroup ?? '', /^\d{2}-\d{2}$|^\d{2}\+$/);
+});
+
+test('parseDetail (dobles por evento) ignora la tabla de horas de reloj', () => {
+  // Esta plantilla trae una tabla extra "Split | Time Of Day | Time | Diff"
+  // con horas de reloj (Rox In 08:04:15). Colaban como splits: salían 49.
+  const d = parseDetail(fx('detail-doubles-in-event.html'), 'LR3MS4JI5658BD', 'doubles');
+
+  assert.equal(d.validation.splitCount, 20, 'debe haber 19 splits + el total');
+  assert.ok(d.validation.ok);
+  assert.ok(!d.splits.some((s) => s.seconds > 7 * 3600), 'se coló una hora de reloj');
+
+  // El total no está en la tabla de splits, sino como "Overall Time".
+  assert.equal(d.splits.find((s) => s.key === 'total')?.time, '00:57:59');
+
+  // La sede viene como "Race: 2026 Bangkok", con el año delante.
+  assert.equal(d.city, 'Bangkok');
+  assert.equal(d.year, 2026);
+
+  assert.equal(d.members.length, 2);
+  assert.equal(d.name, 'Lee, JooYeong / Jang, GyuChang');
+  assert.equal(d.rankAgeGroup, 1);
+});
