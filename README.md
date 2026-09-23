@@ -31,9 +31,14 @@ a una `Simulation` y a sus PR por estación.
 | `division` | no | Debe coincidir con la de la búsqueda |
 
 Devuelve cabecera (nombre, nacionalidad, grupo de edad, dorsal, sede, año, bonus,
-penalización), `members[]` con **los dos integrantes en dobles** (nombre + nacionalidad)
-y `splits[]`: 8 runs, 8 estaciones, roxzone, run total y best run lap, cada uno con
-tiempo, segundos y **puesto mundial**.
+penalización, motivo de descalificación, puesto por género y por grupo de edad),
+`members[]` con **los dos integrantes en dobles** (nombre + nacionalidad) y `splits[]`:
+8 runs, 8 estaciones, roxzone, run total y best run lap, cada uno con tiempo,
+segundos y **puesto mundial**.
+
+Las páginas de detalle no usan una única plantilla: unas traen `Name` + `Nat` por
+separado y otras un solo `Athlete` con la nacionalidad entre paréntesis. El parser
+acepta ambas, y un nombre ilegible invalida el resultado en vez de devolver `null`.
 
 ## Decisiones de diseño
 
@@ -61,8 +66,10 @@ pago (p. ej. hyroxresultapi.com) es reescribir ese fichero, sin tocar la app.
   que pedir sede y día. En individual no hace falta.
 - **En dobles los splits son del equipo**, no por integrante. results.hyrox.com no
   registra quién hizo qué dentro de cada estación.
-- La primera petición sin cachear puede tardar ~25s; las siguientes, ~0,3s
-  (su propio `x-results-cache`).
+- **La primera petición de una consulta en frío tarda ~25-30s**; las siguientes,
+  ~0,3s (su propio `x-results-cache`). De ahí los 45s de timeout y `maxDuration: 60`.
+  Si aun así expira, la respuesta es `504` con `retryable: true` y `Retry-After`:
+  el cliente debe reintentar, porque esa primera petición ya calentó su caché.
 
 ## Desarrollo
 

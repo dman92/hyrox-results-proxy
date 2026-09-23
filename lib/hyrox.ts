@@ -56,6 +56,9 @@ export interface RaceDetail {
   year: number | null;
   bonus: string | null;
   penalty: string | null;
+  disqualReason: string | null;
+  rankGender: number | null;
+  rankAgeGroup: number | null;
   splits: Split[];
   /** Comprobaciones de integridad: si fallan, el HTML de origen cambió. */
   validation: { runSumMatchesRunTotal: boolean | null; splitCount: number; ok: boolean };
@@ -89,11 +92,34 @@ export function canonicalKey(label: string): string {
   return l.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 }
 
+/** "Dearden, Jake (ENG)" -> { name, nationality }. Sin paréntesis, nacionalidad null. */
+function splitNationality(v: string): { name: string; nationality: string | null } {
+  const m = v.match(/^(.*?)\s*\(([A-Z]{2,3})\)\s*$/);
+  return m ? { name: m[1].trim(), nationality: m[2] } : { name: v.trim(), nationality: null };
+}
+
+export class UpstreamTimeout extends Error {
+  constructor() { super('results.hyrox.com no respondió a tiempo'); this.name = 'UpstreamTimeout'; }
+}
+
+// results.hyrox.com sirve la primera petición de una consulta en frío en ~25-30s
+// y las siguientes en <1s (su propio x-results-cache). 20s se quedaba corto y
+// devolvía 502 en el primer intento; con 45s la petición fría completa.
+const UPSTREAM_TIMEOUT_MS = 45_000;
+
 async function get(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en' },
-    signal: AbortSignal.timeout(20_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en' },
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if ((err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError') {
+      throw new UpstreamTimeout();
+    }
+    throw err;
+  }
   if (!res.ok) throw new Error(`upstream ${res.status} for ${url}`);
   return res.text();
 }
@@ -221,9 +247,18 @@ export function parseDetail(html: string, idp: string, division: Division): Race
   const members: { name: string; nationality: string | null }[] = [];
   for (const [k, v] of Object.entries(info)) {
     if (!/^Member \d+$/.test(k)) continue;
-    const m = v.match(/^(.*?)\s*\(([A-Z]{2,3})\)\s*$/);
-    members.push(m ? { name: m[1].trim(), nationality: m[2] } : { name: v, nationality: null });
+    members.push(splitNationality(v));
   }
+
+  // Las páginas de detalle no usan siempre la misma etiqueta: unas traen
+  // "Name" + "Nat" por separado y otras un "Athlete" con la nacionalidad dentro.
+  const athleteRaw = info['Name'] ?? info['Athlete'] ?? info['Member'] ?? null;
+  const athlete = athleteRaw ? splitNationality(athleteRaw) : null;
+
+  const num = (k: string): number | null => {
+    const v = info[k];
+    return v && /^\d+$/.test(v) ? parseInt(v, 10) : null;
+  };
 
   const cityYear = info['City'] ?? '';
   const yearMatch = cityYear.match(/\b(20\d{2})\b/);
@@ -245,21 +280,24 @@ export function parseDetail(html: string, idp: string, division: Division): Race
     idp,
     division,
     divisionLabel: info['Division'] ?? null,
-    name: info['Name'] ?? info['Member'] ?? null,
+    name: athlete?.name ?? null,
     members,
-    nationality: info['Nat'] ?? null,
+    nationality: info['Nat'] ?? athlete?.nationality ?? null,
     ageGroup: info['Age Group'] ?? null,
     bib: info['Bib Number'] && info['Bib Number'] !== '–' ? info['Bib Number'] : null,
     city: yearMatch ? cityYear.replace(yearMatch[0], '').trim() : cityYear || null,
     year: yearMatch ? parseInt(yearMatch[1], 10) : null,
     bonus: info['*Bonus'] && info['*Bonus'] !== '–' ? info['*Bonus'] : null,
     penalty: info['*Penalty'] && info['*Penalty'] !== '–' ? info['*Penalty'] : null,
+    disqualReason: info['Disqual Reason'] && info['Disqual Reason'] !== '–' ? info['Disqual Reason'] : null,
+    rankGender: num('Rank (M/W)'),
+    rankAgeGroup: num('Rank (AG)'),
     splits,
     validation: {
       runSumMatchesRunTotal,
       splitCount: splits.length,
       // 8 runs + 8 estaciones + roxzone + total = 18 mínimo razonable
-      ok: splits.length >= 18 && runSumMatchesRunTotal !== false,
+      ok: splits.length >= 18 && runSumMatchesRunTotal !== false && athlete !== null,
     },
   };
 }

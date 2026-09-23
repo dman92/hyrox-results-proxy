@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { search, searchInEvent, DIVISIONS, type Division } from '../lib/hyrox.js';
+import { search, searchInEvent, DIVISIONS, type Division, UpstreamTimeout } from '../lib/hyrox.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const surname = String(req.query.surname ?? '').trim();
@@ -35,6 +35,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     return res.status(200).json({ query: { surname, division, eventId, sex, ageClass }, count: hits.length, hits });
   } catch (err) {
+    if (err instanceof UpstreamTimeout) {
+      // La petición en frío calienta su caché: un reintento suele ir inmediato.
+      res.setHeader('Retry-After', '5');
+      return res.status(504).json({ error: 'upstream_timeout', retryable: true, detail: err.message });
+    }
     return res.status(502).json({ error: 'upstream', detail: String((err as Error).message) });
   }
 }

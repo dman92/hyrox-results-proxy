@@ -67,3 +67,25 @@ test('parseDetail (dobles) devuelve el nombre del compañero', () => {
   assert.notEqual(d.members[0].name, d.members[1].name);
   assert.ok(d.validation.ok);
 });
+
+test('parseDetail acepta la variante con etiqueta "Athlete"', () => {
+  // Unas páginas traen "Name" + "Nat"; otras un único "Athlete" con la
+  // nacionalidad entre paréntesis. Esta segunda devolvía name: null.
+  const d = parseDetail(fx('detail-solo-athlete-label.html'), 'LR3MS4JI4F117DOV', 'pro');
+
+  assert.equal(d.name, 'Dearden, Jake');
+  assert.equal(d.nationality, 'ENG');
+  assert.equal(d.members.length, 0);
+  assert.equal(d.rankGender, 98);
+  assert.equal(d.rankAgeGroup, 41);
+  assert.equal(d.disqualReason, null);
+  assert.ok(d.validation.ok);
+});
+
+test('un nombre ilegible invalida el parseo', () => {
+  // Si cambian la etiqueta otra vez, debe fallar ruidosamente, no devolver null.
+  const roto = fx('detail-solo.html').replace(/>Name</g, '>Nombre<');
+  const d = parseDetail(roto, 'X', 'pro');
+  assert.equal(d.name, null);
+  assert.equal(d.validation.ok, false);
+});
