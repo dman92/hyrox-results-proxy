@@ -60,6 +60,8 @@ export const SCHEMA: string[] = [
    )`,
   // Mismo texto que usa searchQuery(), para que Postgres use el índice trigram
   `CREATE INDEX IF NOT EXISTS results_name_trgm ON results USING gin ((' ' || name_norm) gin_trgm_ops)`,
+  // Versiones anteriores marcaban como completos los eventos sin filas: se reabren.
+  `UPDATE events SET completed_at = NULL WHERE row_count = 0 AND completed_at IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,
@@ -122,7 +124,11 @@ export async function pendingEventCodes(db: Query, season: string, refreshDays: 
 
 const BATCH = 2000;
 
-/** Guarda todas las filas de un evento y lo marca como completo. Idempotente. */
+/**
+ * Guarda todas las filas de un evento y lo marca como completo. Idempotente.
+ * Un evento sin filas (carrera que aún no se ha celebrado) no se marca: sigue
+ * pendiente y se vuelve a mirar en la próxima ejecución (1 petición).
+ */
 export async function saveEventRows(db: Query, season: string, eventCode: string, rows: ListRow[]): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH) {
     const b = rows.slice(i, i + BATCH);
@@ -149,7 +155,10 @@ export async function saveEventRows(db: Query, season: string, eventCode: string
       ],
     );
   }
-  await db(`UPDATE events SET completed_at = now(), row_count = $2 WHERE code = $1`, [eventCode, rows.length]);
+  await db(
+    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2 WHERE code = $1`,
+    [eventCode, rows.length],
+  );
 }
 
 // --------------------------------------------------------------------------- búsqueda

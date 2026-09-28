@@ -29,7 +29,8 @@ function fakeHyrox() {
     calls.push(url);
     const event = url.searchParams.get('event');
     const page = Number(url.searchParams.get('page') ?? 1);
-    if (!event) return new Response(selectPage(['H_A', 'H_A_OVERALL', 'HD1_B', 'H_BAD']));
+    if (!event) return new Response(selectPage(['H_A', 'H_A_OVERALL', 'HD1_B', 'H_BAD', 'H_FUTURE']));
+    if (event === 'H_FUTURE') return new Response('<p>No results</p>');
     if (event === 'H_BAD') return new Response('boom', { status: 404 });
     if (event === 'H_A') return new Response(listPage('A', (page - 1) * 100 + 1, page === 1 ? 100 : page === 2 ? 50 : 0));
     if (event === 'HD1_B') return new Response(page === 1 ? listPage('B', 1, 1) : '<ul></ul>');
@@ -57,7 +58,8 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     assert.deepEqual(first, { rows: 151, failures: 1 });
     assert.ok(!calls.some((u) => u.searchParams.get('event') === 'H_A_OVERALL'), 'no debe tocar _OVERALL');
     assert.equal((await db('SELECT count(*)::int AS n FROM results'))[0].n, 151);
-    assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))], ['H_BAD']);
+    // El evento roto y el que aún no tiene resultados siguen pendientes
+    assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))].sort(), ['H_BAD', 'H_FUTURE']);
 
     const hits = await searchDb(db, 'atleta150', { limit: 5 });
     assert.equal(hits.length, 1);
@@ -65,12 +67,12 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     assert.equal(hits[0].season, 'season-8');
     assert.equal(hits[0].nationality, 'ESP');
 
-    // Segunda ejecución: solo reintenta el evento roto
+    // Segunda ejecución: solo vuelve a mirar el evento roto y el futuro
     calls.length = 0;
     const second = await run(args, db);
     assert.deepEqual(second, { rows: 0, failures: 1 });
     const events = new Set(calls.map((u) => u.searchParams.get('event')).filter(Boolean));
-    assert.deepEqual([...events], ['H_BAD']);
+    assert.deepEqual([...events].sort(), ['H_BAD', 'H_FUTURE']);
 
     // Sin tiempo: no empieza ningún evento
     calls.length = 0;
