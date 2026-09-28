@@ -224,14 +224,30 @@ export function searchInEventUrl(opts: {
   return `${BASE}/${opts.season ?? DEFAULT_SEASON}/?${qs}`;
 }
 
+/**
+ * "HPRO_LR3MS4JIAA2" -> { division: 'pro', eventId: 'LR3MS4JIAA2' }.
+ * Con un prefijo que no está en DIVISIONS (HD1, HA, HY3, THD...) division es null:
+ * entonces hay que pedir el detalle con el código completo (ver detailUrl).
+ */
+export function splitEventCode(code: string): { division: Division | null; eventId: string } {
+  const i = code.indexOf('_');
+  if (i < 0) return { division: null, eventId: code };
+  const prefix = code.slice(0, i);
+  const division = (Object.keys(DIVISIONS) as Division[]).find((d) => DIVISIONS[d] === prefix) ?? null;
+  return { division, eventId: code.slice(i + 1) };
+}
+
 export function detailUrl(
   idp: string,
   division: Division = 'open',
   eventId: string | null = null,
   season = DEFAULT_SEASON,
+  /** Código de evento completo (p. ej. "HD1_LR3MS4JI1760"); tiene prioridad sobre division+eventId. */
+  eventCode: string | null = null,
 ): string {
-  const pid = eventId ? 'list' : 'list_overall';
-  const event = eventId ? `${DIVISIONS[division]}_${eventId}` : `${DIVISIONS[division]}_HYROXOVERALL`;
+  const pid = eventCode || eventId ? 'list' : 'list_overall';
+  const event = eventCode
+    ?? (eventId ? `${DIVISIONS[division]}_${eventId}` : `${DIVISIONS[division]}_HYROXOVERALL`);
   const qs = buildQuery({ content: 'detail', pid, idp, lang: 'EN_CAP', event });
   return `${BASE}/${season}/?${qs}`;
 }
@@ -426,6 +442,7 @@ export async function detail(
   division: Division = 'open',
   eventId: string | null = null,
   season: string = DEFAULT_SEASON,
+  eventCode: string | null = null,
 ): Promise<RaceDetail> {
-  return parseDetail(await get(detailUrl(idp, division, eventId, season)), idp, division);
+  return parseDetail(await get(detailUrl(idp, division, eventId, season, eventCode)), idp, division);
 }

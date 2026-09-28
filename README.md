@@ -9,9 +9,15 @@ a una `Simulation` y a sus PR por estación.
 
 ### `GET /api/search`
 
+Con base de datos (`DATABASE_URL`) busca primero en los listados volcados: responde
+al instante, acepta nombre y apellidos en cualquier orden y sin acentos (`q=ana per`),
+busca en todas las divisiones si no pasas `division`, y encuentra también al segundo
+miembro de un equipo de dobles. Si ahí no hay nada, consulta en vivo como antes. La
+respuesta indica `source: "db"` o `"live"`.
+
 | Parámetro | Req. | Descripción |
 |---|---|---|
-| `surname` | sí | Apellido (mínimo 2 caracteres) |
+| `q` / `surname` | sí | Nombre y/o apellido (mínimo 2 caracteres) |
 | `division` | no | `open` (def.), `pro`, `doubles`, `pro_doubles`, `relay` |
 | `eventId` | * | Obligatorio en `doubles`, `pro_doubles` y `relay` |
 | `sex` | no | `M` / `W` |
@@ -23,6 +29,12 @@ a una `Simulation` y a sus PR por estación.
 → { count: 19, hits: [ { idp, rank, name, nationality, city, year, totalTime, totalSec } ] }
 ```
 
+Los hits de la base de datos traen además `event` (código completo del evento, p. ej.
+`HPRO_LR3MS4JIAA2`), `eventLabel` y `season`. Para pedir el detalle basta con
+`/api/athlete?idp=…&event=…&season=…`. `division` y `eventId` pueden venir `null`
+cuando el prefijo del evento no es una división conocida (HD1, HA, HY3…).
+`sex` y `ageClass` solo se aplican a la búsqueda en vivo.
+
 ### `GET /api/health`
 
 Sin parámetros. Devuelve el commit y el mensaje del build desplegado, para saber
@@ -33,6 +45,7 @@ qué versión está sirviendo sin tener que inferirlo del comportamiento.
 | Parámetro | Req. | Descripción |
 |---|---|---|
 | `idp` | sí | Identificador devuelto por `/api/search` |
+| `event` | * | Código completo del evento: **devuélvelo si el hit lo trae** (hits de base de datos) |
 | `division` | no | Debe coincidir con la de la búsqueda |
 | `eventId` | * | **Devuelve el `eventId` que traiga el hit**, si no es `null` |
 | `season` | * | **Devuelve la `season` que traiga el hit**, si no es `null` |
@@ -53,12 +66,35 @@ Las páginas de detalle no usan una única plantilla: unas traen `Name` + `Nat` 
 separado y otras un solo `Athlete` con la nacionalidad entre paréntesis. El parser
 acepta ambas, y un nombre ilegible invalida el resultado en vez de devolver `null`.
 
+## Base de datos (Neon) e ingesta
+
+Buscar en vivo es lento: cada consulta en frío hace que results.hyrox.com tarde
+~30 s o devuelva 504. Por eso los listados se vuelcan a Postgres (Neon) y la API
+busca ahí. Los splits no se vuelcan (serían ~1 petición por resultado): se piden
+en vivo la primera vez que alguien abre una carrera y se guardan en `details`.
+
+- **Tablas** (`lib/db.ts`): `events` (checkpoint por evento), `results` (una fila
+  por resultado, con índice trigram para buscar por nombre) y `details` (caché de
+  `/api/athlete`). Se crean solas en la primera ingesta.
+- **Espacio**: ~300 MB por millón de resultados. Las temporadas 7-9 caben en los
+  0,5 GB del plan gratuito; cuando no quepan, borra la más antigua:
+  `DELETE FROM results WHERE season = 'season-7'; DELETE FROM events WHERE season = 'season-7';`
+- **Ingesta automática**: `.github/workflows/ingest.yml` se ejecuta cada 6 h con el
+  secret `DATABASE_URL`. Cada ejecución trabaja como mucho ~4,5 h y la siguiente
+  sigue donde lo dejó; con todo volcado, tarda 1-2 min (carreras nuevas + refresco
+  de las recientes durante 10 días). También se lanza a mano desde Actions →
+  Ingesta HYROX → Run workflow (con `max_events: 2` para probar).
+- **Ingesta local**: `DATABASE_URL=… npm run ingest -- --season 8`. Sin
+  `DATABASE_URL` escribe `data/<season>.jsonl` como antes.
+
+Sin `DATABASE_URL` todo funciona como antes, en vivo.
+
 ## Decisiones de diseño
 
-**Sin base de datos.** Un resultado pasado no cambia nunca, así que `/api/athlete`
-va con `s-maxage=31536000, immutable` y lo absorbe el CDN de Vercel. `/api/search`
-usa una hora, porque sí aparecen carreras nuevas. Si algún día hace falta analítica
-o modo offline, se añade Postgres; para importar, no hace falta.
+**Base de datos opcional.** Un resultado pasado no cambia nunca, así que `/api/athlete`
+va con `s-maxage=31536000, immutable` y lo absorbe el CDN de Vercel, y además se
+guarda en `details`. `/api/search` usa una hora, porque sí aparecen carreras nuevas.
+Si la base de datos falla, la API sigue en vivo en vez de devolver error.
 
 **Falla ruidosamente.** `parseDetail` valida que haya ≥18 splits y que la suma de los
 8 runs cuadre con `Run Total` (±10s, que es la deriva del redondeo al segundo de mika).
@@ -100,6 +136,7 @@ pago (p. ej. hyroxresultapi.com) es reescribir ese fichero, sin tocar la app.
 ```bash
 npm install
 npm test           # parser contra fixtures HTML reales
+TEST_DATABASE_URL=postgres://localhost/hyrox_test npm test   # + ingesta y búsqueda contra Postgres
 npm run typecheck
 ```
 
