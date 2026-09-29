@@ -7,6 +7,9 @@ a una `Simulation` y a sus PR por estación.
 
 ## Endpoints
 
+`/` sirve una página para probar la API desde el navegador (buscar atletas, ver
+carreras y clasificaciones, abrir splits y ver el JSON crudo).
+
 ### `GET /api/search`
 
 Con base de datos (`DATABASE_URL`) busca primero en los listados volcados: responde
@@ -34,6 +37,40 @@ Los hits de la base de datos traen además `event` (código completo del evento,
 `/api/athlete?idp=…&event=…&season=…`. `division` y `eventId` pueden venir `null`
 cuando el prefijo del evento no es una división conocida (HD1, HA, HY3…).
 `sex` y `ageClass` solo se aplican a la búsqueda en vivo.
+
+### `GET /api/events`
+
+Solo con base de datos: son los eventos que ha descubierto la ingesta.
+
+- Sin parámetros: temporadas disponibles, con número de carreras y resultados.
+- `?season=season-9`: carreras de esa temporada, en el orden del desplegable de la web
+  (no hay fechas). La web lista cada división como un evento aparte (`H_X`, `HPRO_X`,
+  `HD_X`…); aquí se agrupan por la parte común del código (`id: "X"`).
+
+```
+/api/events?season=season-8
+→ { season, count, races: [ { id, season, name, place, status, results,
+      divisions: [ { code, division, prefix, label, results, status } ] } ] }
+```
+
+`status`: `available` (con resultados), `upcoming` (publicada, aún sin resultados) o
+`pending` (todavía no descargada). `name` es la sede y el año (`place`) en cuanto
+alguien abre una ficha de esa carrera; hasta entonces, la etiqueta de la web.
+
+### `GET /api/event`
+
+| Parámetro | Req. | Descripción |
+|---|---|---|
+| `code` | sí | Código completo del evento (`divisions[].code` de `/api/events`) |
+| `q` | no | Filtra la clasificación por nombre |
+| `limit` / `offset` | no | Paginación (máx. 200, def. 50) |
+
+```
+/api/event?code=HPRO_LR3MS4JIAA2&limit=50&offset=0
+→ { event, total, limit, offset, results: [ …mismo formato que los hits de /api/search… ] }
+```
+
+Cada resultado se abre con `/api/athlete` igual que un hit de la búsqueda.
 
 ### `GET /api/health`
 

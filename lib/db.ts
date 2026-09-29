@@ -62,6 +62,10 @@ export const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS results_name_trgm ON results USING gin ((' ' || name_norm) gin_trgm_ops)`,
   // Versiones anteriores marcaban como completos los eventos sin filas: se reabren.
   `UPDATE events SET completed_at = NULL WHERE row_count = 0 AND completed_at IS NOT NULL`,
+  // Orden del desplegable de la web (sirve para ordenar carreras, que no traen fecha)
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS position integer`,
+  // Sede y año ("Valencia 2025"), sacados de la primera ficha de detalle que se consulta
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS place text`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,
@@ -71,6 +75,17 @@ export const SCHEMA: string[] = [
 
 export async function migrate(db: Query): Promise<void> {
   for (const statement of SCHEMA) await db(statement);
+}
+
+let schemaReady: Promise<void> | null = null;
+
+/**
+ * Para la API: aplica el esquema una vez por instancia antes de usar columnas
+ * nuevas, sin esperar a que arranque la siguiente ingesta. Es idempotente.
+ */
+export function ensureSchema(db: Query): Promise<void> {
+  schemaReady ??= migrate(db).catch((err) => { schemaReady = null; throw err; });
+  return schemaReady;
 }
 
 // --------------------------------------------------------------------------- nombres
@@ -98,10 +113,15 @@ export async function upsertEvents(db: Query, season: string, events: EventRow[]
   if (events.length === 0) return;
   const known = (await db(`SELECT 1 FROM events WHERE season = $1 LIMIT 1`, [season])).length > 0;
   await db(
-    `INSERT INTO events (code, season, label, division, refresh)
-     SELECT *, $5::boolean FROM unnest($1::text[], $2::text[], $3::text[], $4::text[])
-     ON CONFLICT (code) DO UPDATE SET label = EXCLUDED.label, division = EXCLUDED.division`,
-    [events.map((e) => e.code), events.map(() => season), events.map((e) => e.label), events.map((e) => e.division), known],
+    `INSERT INTO events (code, season, label, division, position, refresh)
+     SELECT c, s, l, d, p, $6::boolean
+     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::integer[]) AS t(c, s, l, d, p)
+     ON CONFLICT (code) DO UPDATE SET
+       label = EXCLUDED.label, division = EXCLUDED.division, position = EXCLUDED.position`,
+    [
+      events.map((e) => e.code), events.map(() => season), events.map((e) => e.label),
+      events.map((e) => e.division), events.map((_, i) => i), known,
+    ],
   );
 }
 
@@ -218,30 +238,166 @@ export function secToHms(sec: number | null): string | null {
   return `${pad(Math.floor(sec / 3600))}:${pad(Math.floor((sec % 3600) / 60))}:${pad(sec % 60)}`;
 }
 
+/** Fila de results (+ label y division del evento) -> hit con el formato de /api/search. */
+function toHit(r: Record<string, any>): DbHit {
+  const code = r.event_code as string;
+  const division = (r.division as Division | null) ?? null;
+  return {
+    idp: r.idp,
+    division,
+    eventId: division ? code.slice(code.indexOf('_') + 1) : null,
+    season: r.season,
+    event: code,
+    eventLabel: r.label,
+    rank: r.rank,
+    name: r.name,
+    nationality: r.nationality,
+    city: r.city,
+    year: r.year,
+    ageGroup: r.age_group,
+    totalTime: secToHms(r.total_sec),
+    totalSec: r.total_sec,
+  };
+}
+
 export async function searchDb(db: Query, q: string, opts: { division?: Division; limit: number }): Promise<DbHit[]> {
   const { text, params, empty } = searchQuery(q, opts);
   if (empty) return [];
-  const rows = await db(text, params);
-  return rows.map((r) => {
-    const code = r.event_code as string;
-    const division = (r.division as Division | null) ?? null;
-    return {
-      idp: r.idp,
-      division,
-      eventId: division ? code.slice(code.indexOf('_') + 1) : null,
-      season: r.season,
-      event: code,
-      eventLabel: r.label,
-      rank: r.rank,
-      name: r.name,
-      nationality: r.nationality,
-      city: r.city,
-      year: r.year,
-      ageGroup: r.age_group,
-      totalTime: secToHms(r.total_sec),
-      totalSec: r.total_sec,
-    };
-  });
+  return (await db(text, params)).map(toHit);
+}
+
+// --------------------------------------------------------------------------- eventos
+
+export type EventStatus = 'available' | 'upcoming' | 'pending';
+
+export interface RaceDivision {
+  /** Código completo, para /api/event?code=… */
+  code: string;
+  division: Division | null;
+  /** Prefijo del código (H, HPRO, HD, HE…): identifica la división aunque no sea conocida. */
+  prefix: string;
+  label: string;
+  results: number | null;
+  /** available: con resultados · upcoming: publicada sin resultados · pending: aún no descargada */
+  status: EventStatus;
+}
+
+export interface Race {
+  /** Parte común de los códigos de sus divisiones (H_X, HPRO_X, HD_X -> X). */
+  id: string;
+  season: string;
+  /** Sede y año si ya se conocen (de una ficha de detalle); si no, la etiqueta de la web. */
+  name: string;
+  place: string | null;
+  status: EventStatus;
+  results: number;
+  divisions: RaceDivision[];
+}
+
+function statusOf(rowCount: number | null): EventStatus {
+  if (rowCount === null || rowCount === undefined) return 'pending';
+  return rowCount > 0 ? 'available' : 'upcoming';
+}
+
+/** Cuenta de eventos y resultados por temporada, de la más reciente a la más antigua. */
+export async function listSeasons(db: Query): Promise<{ season: string; races: number; results: number }[]> {
+  const rows = await db(
+    `SELECT season, count(DISTINCT substr(code, strpos(code, '_') + 1))::int AS races,
+            coalesce(sum(row_count), 0)::int AS results
+     FROM events GROUP BY season
+     ORDER BY substring(season from '[0-9]+')::int DESC`,
+  );
+  return rows.map((r) => ({ season: r.season, races: r.races, results: r.results }));
+}
+
+/**
+ * Carreras de una temporada. La web lista cada división como un evento aparte
+ * (H_X, HPRO_X, HD_X...); aquí se agrupan por la parte común del código.
+ * Ordenadas como en el desplegable de la web, que no da fechas.
+ */
+export async function listRaces(db: Query, season: string): Promise<Race[]> {
+  const rows = await db(
+    `SELECT code, label, division, row_count, position, place FROM events
+     WHERE season = $1 ORDER BY position NULLS LAST, code`,
+    [season],
+  );
+  const races = new Map<string, Race>();
+  for (const r of rows) {
+    const code = r.code as string;
+    const cut = code.indexOf('_');
+    const id = code.slice(cut + 1);
+    let race = races.get(id);
+    if (!race) {
+      race = { id, season, name: r.label, place: null, status: 'pending', results: 0, divisions: [] };
+      races.set(id, race);
+    }
+    race.divisions.push({
+      code,
+      division: r.division ?? null,
+      prefix: code.slice(0, cut),
+      label: r.label,
+      results: r.row_count ?? null,
+      status: statusOf(r.row_count ?? null),
+    });
+    race.results += r.row_count ?? 0;
+    race.place = race.place ?? r.place ?? null;
+    // La etiqueta de la división open es la mejor candidata a nombre de la carrera
+    if (r.division === 'open') race.name = r.label;
+  }
+  for (const race of races.values()) {
+    if (race.place) race.name = race.place;
+    const statuses = new Set(race.divisions.map((d) => d.status));
+    race.status = statuses.has('available') ? 'available' : statuses.has('pending') ? 'pending' : 'upcoming';
+  }
+  return [...races.values()];
+}
+
+/** Clasificación de un evento (una división), opcionalmente filtrada por nombre. */
+export async function eventResults(
+  db: Query,
+  code: string,
+  opts: { q?: string; limit: number; offset: number },
+): Promise<{ event: RaceDivision & { season: string; place: string | null } | null; total: number; results: DbHit[] }> {
+  const ev = (await db(`SELECT code, season, label, division, row_count, place FROM events WHERE code = $1`, [code]))[0];
+  if (!ev) return { event: null, total: 0, results: [] };
+
+  const params: unknown[] = [code];
+  const where = ['r.event_code = $1'];
+  for (const token of nameTokens(opts.q ?? '').slice(0, 6)) {
+    params.push(`% ${token}%`);
+    where.push(`(' ' || r.name_norm) LIKE $${params.length}`);
+  }
+  const total = (await db(`SELECT count(*)::int AS n FROM results r WHERE ${where.join(' AND ')}`, params))[0].n as number;
+  params.push(opts.limit, opts.offset);
+  const rows = await db(
+    `SELECT r.idp, r.event_code, r.season, r.name, r.nationality, r.age_group, r.city, r.year,
+            r.rank, r.total_sec, e.label, e.division
+     FROM results r JOIN events e ON e.code = r.event_code
+     WHERE ${where.join(' AND ')}
+     ORDER BY r.rank NULLS LAST, r.total_sec NULLS LAST, r.name
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+  const cut = code.indexOf('_');
+  return {
+    event: {
+      code,
+      season: ev.season,
+      division: ev.division ?? null,
+      prefix: code.slice(0, cut),
+      label: ev.label,
+      place: ev.place ?? null,
+      results: ev.row_count ?? null,
+      status: statusOf(ev.row_count ?? null),
+    },
+    total,
+    results: rows.map(toHit),
+  };
+}
+
+/** Guarda la sede de un evento la primera vez que se conoce (sale en las fichas de detalle). */
+export async function setEventPlace(db: Query, code: string, place: string): Promise<void> {
+  await db(`UPDATE events SET place = $2 WHERE code = $1 AND place IS NULL`, [code, place]);
 }
 
 // --------------------------------------------------------------------------- caché de detalle
