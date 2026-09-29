@@ -21,8 +21,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import * as cheerio from 'cheerio';
-import { parseListRows, splitEventCode, USER_AGENT, type ListRow } from '../lib/hyrox.ts';
-import { getDb, migrate, pendingEventCodes, saveEventRows, upsertEvents, type Query } from '../lib/db.ts';
+import { detailUrl, parseDetail, parseListRows, splitEventCode, USER_AGENT, type ListRow } from '../lib/hyrox.ts';
+import {
+  getDb, migrate, pendingEventCodes, racesWithoutPlace, saveDetail, saveEventRows, setEventPlace, upsertEvents, type Query,
+} from '../lib/db.ts';
 
 const BASE = 'https://results.hyrox.com';
 const PAGE_SIZE = 100;
@@ -32,12 +34,13 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 
 export interface Args {
   seasons: string[]; rate: number; maxEvents: number | null; outDir: string;
-  maxMinutes: number | null; refreshDays: number;
+  maxMinutes: number | null; refreshDays: number; places: number;
 }
 
 export function parseArgs(argv: string[]): Args {
   const seasons: string[] = [];
   let rate = 2, maxEvents: number | null = null, outDir = OUT_DIR, maxMinutes: number | null = null, refreshDays = 10;
+  let places = 40;
   for (let i = 0; i < argv.length; i++) {
     const next = () => argv[++i];
     if (argv[i] === '--season') seasons.push(`season-${next().replace(/^season-/, '')}`);
@@ -46,9 +49,10 @@ export function parseArgs(argv: string[]): Args {
     else if (argv[i] === '--out') outDir = next();
     else if (argv[i] === '--max-minutes') maxMinutes = Number(next());
     else if (argv[i] === '--refresh-days') refreshDays = Number(next());
+    else if (argv[i] === '--places') places = Number(next());
   }
   if (seasons.length === 0) throw new Error('Falta --season <n> (repetible)');
-  return { seasons, rate, maxEvents, outDir, maxMinutes, refreshDays };
+  return { seasons, rate, maxEvents, outDir, maxMinutes, refreshDays, places };
 }
 
 let requestCount = 0;
@@ -124,6 +128,38 @@ async function fetchEventRows(season: string, code: string, minInterval: number)
   return rows;
 }
 
+/**
+ * Los listados por evento no dicen la sede, y la etiqueta del desplegable suele ser
+ * solo el día ("HYROX - Saturday"). La ficha de detalle sí la trae ("Race: 2026
+ * Bangkok"), así que basta con una ficha por carrera. Cada una es una petición en frío
+ * (~30 s), por eso va limitado a `max` por ejecución. La ficha se guarda también en la
+ * caché de /api/athlete.
+ */
+async function fillPlaces(db: Query, max: number, deadline: number, minInterval: number): Promise<number> {
+  if (max <= 0) return 0;
+  const todo = await racesWithoutPlace(db, max);
+  if (todo.length === 0) return 0;
+  console.log(`\nSedes: ${todo.length} carreras sin nombre de sede`);
+  let done = 0;
+  for (const race of todo) {
+    if (Date.now() > deadline) break;
+    const { division } = splitEventCode(race.code);
+    const url = detailUrl(race.idp, division ?? 'open', null, race.season, race.code);
+    try {
+      const detail = parseDetail(await get(url, minInterval), race.idp, division ?? 'open');
+      const place = [detail.city, detail.year].filter(Boolean).join(' ');
+      // '' si la ficha no la trae: queda marcada y no se vuelve a pedir en cada ejecución
+      await setEventPlace(db, race.code, place);
+      if (detail.validation.ok) await saveDetail(db, url, detail);
+      if (place) done++;
+      console.log(`  ${race.season} ${race.code.padEnd(22)} ${place || '(sin sede en la ficha)'}`);
+    } catch (err) {
+      console.error(`  ${race.code}: ${(err as Error).message}`);
+    }
+  }
+  return done;
+}
+
 /** Dónde se guarda cada evento y cómo se sabe qué falta. */
 export interface Sink {
   describe(season: string): string;
@@ -177,6 +213,8 @@ export async function run(args: Args, injectedDb?: Query | null): Promise<{ rows
 
   const db = injectedDb === undefined ? getDb() : injectedDb;
   if (db) await migrate(db);
+  // Primero unas pocas sedes: así los nombres aparecen aunque la carga inicial tarde días
+  if (db) await fillPlaces(db, args.places, deadline, minInterval);
   const sink = db ? dbSink(db, args.refreshDays) : fileSink(args.outDir);
 
   for (const season of args.seasons) {

@@ -54,8 +54,14 @@ Solo con base de datos: son los eventos que ha descubierto la ingesta.
 ```
 
 `status`: `available` (con resultados), `upcoming` (publicada, aún sin resultados) o
-`pending` (todavía no descargada). `name` es la sede y el año (`place`) en cuanto
-alguien abre una ficha de esa carrera; hasta entonces, la etiqueta de la web.
+`pending` (todavía no descargada).
+
+La etiqueta del desplegable de la web suele ser solo el día (`HYROX - Saturday`), y los
+listados no traen la sede. La ficha de detalle sí (`Race: 2026 Bangkok`), así que la
+ingesta pide **una ficha por carrera** (`--places`, 40 por ejecución por defecto) y
+guarda `place` ("Bangkok 2026") en todas sus divisiones; `/api/athlete` también la
+rellena al abrir cualquier resultado. Con sede, `name` es `"Bangkok 2026 · Saturday"`;
+sin ella, la etiqueta de la web. Los hits de búsqueda y clasificación traen `place`.
 
 ### `GET /api/event`
 

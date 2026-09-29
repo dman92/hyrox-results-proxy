@@ -18,6 +18,9 @@ on:
       max_minutes:
         description: 'No empezar eventos nuevos pasados estos minutos'
         default: '270'
+      places:
+        description: 'Carreras a las que buscar el nombre de la sede (1 petición lenta cada una)'
+        default: '40'
 
 # Nunca dos a la vez: se pisarían el checkpoint y duplicarían peticiones.
 concurrency:
@@ -41,12 +44,13 @@ jobs:
           SEASONS: ${{ inputs.seasons || '7 8 9' }}
           MAX_EVENTS: ${{ inputs.max_events }}
           MAX_MINUTES: ${{ inputs.max_minutes || '270' }}
+          PLACES: ${{ inputs.places || '40' }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "::error::Falta el secret DATABASE_URL (Settings → Secrets and variables → Actions)"
             exit 1
           fi
-          args="--max-minutes $MAX_MINUTES"
+          args="--max-minutes $MAX_MINUTES --places $PLACES"
           for s in $SEASONS; do args="$args --season $s"; done
           if [ -n "$MAX_EVENTS" ]; then args="$args --max-events $MAX_EVENTS"; fi
           node --experimental-strip-types scripts/ingest.ts $args
