@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { detail, detailUrl, DIVISIONS, splitEventCode, type Division, type RaceDetail, UpstreamTimeout } from '../lib/hyrox.js';
-import { getCachedDetail, getDb, saveDetail } from '../lib/db.js';
+import { getCachedDetail, getDb, saveDetail, setEventPlace } from '../lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const idp = String(req.query.idp ?? '').trim();
@@ -58,6 +58,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (db) {
       // La próxima vez no hace falta ir a results.hyrox.com (ni esperar su arranque en frío).
       await saveDetail(db, url, race).catch((err) => console.error('saveDetail falló:', err.message));
+      // Los listados por evento no traen la sede; la ficha sí. Se guarda para /api/events.
+      const code = event ?? (eventId ? `${DIVISIONS[division]}_${eventId}` : null);
+      const place = [race.city, race.year].filter(Boolean).join(' ');
+      if (code && place) {
+        await setEventPlace(db, code, place).catch((err) => console.error('setEventPlace falló:', err.message));
+      }
     }
 
     // Un resultado pasado nunca cambia: cachea un año.

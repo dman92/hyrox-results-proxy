@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import { detailUrl, splitEventCode, type ListRow } from '../lib/hyrox.ts';
 import {
-  getCachedDetail, migrate, nameTokens, normalizeName, pendingEventCodes, saveDetail,
-  saveEventRows, searchDb, secToHms, upsertEvents, type Query,
+  eventResults, getCachedDetail, listRaces, listSeasons, migrate, nameTokens, normalizeName,
+  pendingEventCodes, saveDetail, saveEventRows, searchDb, secToHms, setEventPlace, upsertEvents, type Query,
 } from '../lib/db.ts';
 
 test('normalizeName ignora acentos, mayúsculas y orden', () => {
@@ -57,22 +57,29 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
     ]);
     assert.equal((await pendingEventCodes(db, 'season-8', 10)).size, 3);
 
-    await saveEventRows(db, 'season-8', 'H_VAL25', [
+    const valRows = [
       row('ID1', 'Pérez García, Ana', 3912),
-      row('ID2', 'Smith, John', 4203, { nationality: 'GBR' }),
-      row('ID3', 'Perez, Anabel', null),
-    ]);
+      row('ID2', 'Smith, John', 4203, { nationality: 'GBR', rank: 2 }),
+      row('ID3', 'Perez, Anabel', null, { rank: null }),
+    ];
+    await saveEventRows(db, 'season-8', 'H_VAL25', valRows);
     await saveEventRows(db, 'season-8', 'HD_VAL25', [row('ID9', 'Lee, Brent / Ectin, Ritzy Amor', 3500)]);
     await saveEventRows(db, 'season-8', 'HD1_VAL25', [row('ID7', 'García, Ana', 3000)]);
     // Repetir un evento no duplica filas
-    await saveEventRows(db, 'season-8', 'H_VAL25', [row('ID1', 'Pérez García, Ana', 3912)]);
+    await saveEventRows(db, 'season-8', 'H_VAL25', valRows);
     assert.equal((await db('SELECT count(*)::int AS n FROM results'))[0].n, 5);
 
     // Completados y de la carga inicial: ya no están pendientes
     assert.equal((await pendingEventCodes(db, 'season-8', 10)).size, 0);
 
     // Un evento nuevo en una temporada ya volcada sí se refresca
-    await upsertEvents(db, 'season-8', [{ code: 'H_BCN26', label: '2026 Barcelona', division: 'open' }]);
+    // (la ingesta siempre manda el desplegable entero, en su orden)
+    await upsertEvents(db, 'season-8', [
+      { code: 'H_VAL25', label: '2025 Valencia', division: 'open' },
+      { code: 'HD_VAL25', label: '2025 Valencia', division: 'doubles' },
+      { code: 'HD1_VAL25', label: '2025 Valencia', division: null },
+      { code: 'H_BCN26', label: '2026 Barcelona', division: 'open' },
+    ]);
     assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))], ['H_BCN26']);
     assert.equal((await db(`SELECT refresh FROM events WHERE code = 'H_VAL25'`))[0].refresh, false);
     assert.equal((await db(`SELECT refresh FROM events WHERE code = 'H_BCN26'`))[0].refresh, true);
@@ -102,6 +109,53 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
 
     assert.deepEqual((await searchDb(db, 'ana', { division: 'doubles', limit: 10 })), []);
     assert.deepEqual(await searchDb(db, '!!', { limit: 10 }), []);
+
+    // Carreras: divisiones agrupadas por la parte común del código, en orden de la web
+    await upsertEvents(db, 'season-9', [
+      { code: 'H_NEXT', label: '2026 Madrid', division: 'open' },
+      { code: 'HPRO_NEXT', label: '2026 Madrid', division: 'pro' },
+    ]);
+    await saveEventRows(db, 'season-9', 'H_NEXT', []); // aún sin resultados
+    const races8 = await listRaces(db, 'season-8');
+    assert.deepEqual(races8.map((r) => r.id), ['VAL25', 'BCN26']);
+    const val = races8[0];
+    assert.equal(val.name, '2025 Valencia');
+    assert.equal(val.status, 'available');
+    assert.equal(val.results, 5);
+    assert.deepEqual(val.divisions.map((d) => [d.code, d.prefix, d.division, d.results, d.status]), [
+      ['H_VAL25', 'H', 'open', 3, 'available'],
+      ['HD_VAL25', 'HD', 'doubles', 1, 'available'],
+      ['HD1_VAL25', 'HD1', null, 1, 'available'],
+    ]);
+    assert.equal(races8[1].status, 'pending');
+    const [madrid] = await listRaces(db, 'season-9');
+    assert.equal(madrid.status, 'pending'); // una división sin resultados, otra sin descargar
+    assert.deepEqual(madrid.divisions.map((d) => d.status), ['upcoming', 'pending']);
+
+    assert.deepEqual(await listSeasons(db), [
+      { season: 'season-9', races: 1, results: 0 },
+      { season: 'season-8', races: 2, results: 5 },
+    ]);
+
+    // La sede sale de la ficha de detalle y pasa a ser el nombre de la carrera
+    await setEventPlace(db, 'HD_VAL25', 'Valencia 2025');
+    await setEventPlace(db, 'HD_VAL25', 'Otra cosa'); // no sobrescribe
+    const [valPlaced] = await listRaces(db, 'season-8');
+    assert.equal(valPlaced.name, 'Valencia 2025');
+    assert.equal(valPlaced.place, 'Valencia 2025');
+
+    // Clasificación de un evento, con filtro por nombre y paginación
+    const board = await eventResults(db, 'H_VAL25', { limit: 2, offset: 0 });
+    assert.equal(board.total, 3);
+    assert.equal(board.event!.label, '2025 Valencia');
+    assert.equal(board.event!.status, 'available');
+    assert.deepEqual(board.results.map((r) => r.idp), ['ID1', 'ID2']);
+    assert.equal(board.results[0].event, 'H_VAL25');
+    assert.deepEqual((await eventResults(db, 'H_VAL25', { limit: 2, offset: 2 })).results.map((r) => r.idp), ['ID3']);
+    const filtered = await eventResults(db, 'H_VAL25', { q: 'smith', limit: 10, offset: 0 });
+    assert.equal(filtered.total, 1);
+    assert.equal(filtered.results[0].name, 'Smith, John');
+    assert.equal((await eventResults(db, 'H_NOPE', { limit: 10, offset: 0 })).event, null);
 
     // Caché de detalle
     assert.equal(await getCachedDetail(db, 'k'), null);

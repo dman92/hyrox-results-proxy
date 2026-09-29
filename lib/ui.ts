@@ -63,12 +63,40 @@ export const UI_HTML = String.raw`<!doctype html>
   summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   pre { overflow: auto; font-size: 12px; background: var(--bg); padding: 10px; border-radius: 8px; max-height: 420px; }
   .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 500; }
+  .tabs button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .race { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .race .row b { font-weight: 600; }
+  .race small { color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { padding: 4px 10px; border-radius: 99px; font-size: 13px; font-weight: 500; background: transparent;
+          color: var(--text); border: 1px solid var(--line); }
+  .chip:disabled { color: var(--muted); cursor: default; opacity: .7; }
+  .chip.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .race small.available { color: var(--ok); } .race small.upcoming { color: var(--muted); } .race small.pending { color: var(--warn); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 8px; }
+  .toolbar input { flex: 1 1 200px; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1>HYROX <span>API</span> · pruebas</h1>
-  <p class="sub">Busca un atleta y pulsa un resultado para ver sus splits. Verde = base de datos, naranja = en vivo.</p>
+  <p class="sub">Busca un atleta o abre una carrera, y pulsa un resultado para ver sus splits. Verde = base de datos, naranja = en vivo.</p>
+
+  <div class="tabs">
+    <button type="button" data-tab="search" class="on">Buscar atleta</button>
+    <button type="button" data-tab="events">Eventos</button>
+  </div>
+
+  <section id="tab-events" hidden>
+    <div class="toolbar">
+      <select id="season"></select>
+      <input id="raceFilter" placeholder="Filtrar carreras" autocomplete="off">
+    </div>
+    <div class="list" id="races"></div>
+  </section>
 
   <form id="f">
     <input name="q" placeholder="Nombre y/o apellido" autocomplete="off" required minlength="2">
@@ -86,7 +114,11 @@ export const UI_HTML = String.raw`<!doctype html>
   </form>
 
   <div class="status" id="status"></div>
+  <div class="toolbar" id="boardBar" hidden>
+    <input id="boardFilter" placeholder="Filtrar esta clasificación por nombre" autocomplete="off">
+  </div>
   <div class="list" id="list"></div>
+  <div class="toolbar" id="moreBar" hidden><button type="button" class="ghost" id="more">Cargar más</button></div>
   <div id="detail"></div>
 </main>
 
@@ -124,6 +156,18 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
 
+  function hitsHtml(list, from) {
+    return list.map(function (h, k) {
+      var i = from + k;
+      var where = h.eventLabel || [h.city, h.year].filter(Boolean).join(' ') || '';
+      var extra = [h.division || h.event, h.season, h.ageGroup, h.nationality].filter(Boolean).join(' · ');
+      return '<button class="hit" data-i="' + i + '">' +
+        '<b>' + (h.rank ? '<span style="color:var(--muted)">#' + h.rank + '</span> ' : '') + esc(h.name) + '</b>' +
+        '<span class="t">' + esc(h.totalTime || '–') + '</span>' +
+        '<small>' + esc(where) + '</small><small>' + esc(extra) + '</small></button>';
+    }).join('');
+  }
+
   function raw(obj) { return '<details><summary>JSON</summary><pre>' + esc(JSON.stringify(obj, null, 2)) + '</pre></details>'; }
 
   $('f').addEventListener('submit', function (e) {
@@ -134,19 +178,14 @@ export const UI_HTML = String.raw`<!doctype html>
     if (fd.get('eventId').trim()) p.set('eventId', fd.get('eventId').trim());
     var url = '/api/search?' + p;
     $('list').innerHTML = ''; $('detail').innerHTML = '';
+    $('boardBar').hidden = true; $('moreBar').hidden = true;
     status('Buscando… ' + esc(url));
     call(url).then(function (res) {
       if (!res.ok) { status(res.code + ' · ' + res.ms + ' ms · ' + esc(res.body.error || '') + ' ' + esc(res.body.hint || res.body.detail || ''), true); return; }
       hits = res.body.hits || [];
       var src = res.body.source || 'live';
       status('<span class="badge ' + src + '">' + src + '</span>' + hits.length + ' resultados · ' + res.ms + ' ms · ' + esc(url));
-      $('list').innerHTML = hits.map(function (h, i) {
-        var where = h.eventLabel || [h.city, h.year].filter(Boolean).join(' ') || '';
-        var extra = [h.division || h.event, h.season, h.ageGroup, h.nationality].filter(Boolean).join(' · ');
-        return '<button class="hit" data-i="' + i + '">' +
-          '<b>' + esc(h.name) + '</b><span class="t">' + esc(h.totalTime || '–') + '</span>' +
-          '<small>' + esc(where) + (h.rank ? ' · #' + h.rank : '') + '</small><small>' + esc(extra) + '</small></button>';
-      }).join('') + (hits.length ? '' : '<p class="sub">Sin resultados.</p>') + raw(res.body);
+      $('list').innerHTML = hitsHtml(hits, 0) + (hits.length ? '' : '<p class="sub">Sin resultados.</p>') + raw(res.body);
     }).catch(function (err) { status('Error de red: ' + esc(err.message), true); });
   });
 
@@ -224,6 +263,102 @@ export const UI_HTML = String.raw`<!doctype html>
       $('list').innerHTML = raw(res.body); $('detail').innerHTML = '';
     });
   });
+
+  // ------------------------------------------------------------------ eventos
+  var races = [], board = null, seasonsLoaded = false;
+  var STATUS = { available: 'con resultados', upcoming: 'sin resultados aún', pending: 'pendiente de descargar' };
+
+  document.querySelector('.tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('.tabs button').forEach(function (x) { x.classList.toggle('on', x === b); });
+    var ev = b.dataset.tab === 'events';
+    $('tab-events').hidden = !ev; $('f').hidden = ev;
+    $('list').innerHTML = ''; $('detail').innerHTML = ''; status('');
+    $('boardBar').hidden = true; $('moreBar').hidden = true;
+    if (ev && !seasonsLoaded) loadSeasons();
+    if (ev && seasonsLoaded) renderRaces();
+  });
+
+  function loadSeasons() {
+    status('Cargando temporadas…');
+    call('/api/events').then(function (res) {
+      if (!res.ok) { status(res.code + ' · ' + esc(res.body.error || ''), true); return; }
+      seasonsLoaded = true;
+      $('season').innerHTML = (res.body.seasons || []).map(function (s) {
+        return '<option value="' + esc(s.season) + '">' + esc(s.season.replace('season-', 'Temporada ')) +
+          ' · ' + s.races + ' carreras · ' + s.results.toLocaleString() + ' resultados</option>';
+      }).join('');
+      if ($('season').value) loadRaces(); else status('Todavía no hay eventos en la base de datos.');
+    });
+  }
+
+  function loadRaces() {
+    var url = '/api/events?season=' + encodeURIComponent($('season').value);
+    status('Cargando carreras… ' + esc(url));
+    call(url).then(function (res) {
+      if (!res.ok) { status(res.code + ' · ' + esc(res.body.error || ''), true); return; }
+      races = res.body.races || [];
+      status(races.length + ' carreras · ' + res.ms + ' ms · ' + esc(url));
+      renderRaces();
+    });
+  }
+
+  function renderRaces() {
+    var f = $('raceFilter').value.trim().toLowerCase();
+    var shown = races.filter(function (r) {
+      return !f || (r.name + ' ' + r.id + ' ' + r.divisions.map(function (d) { return d.label; }).join(' ')).toLowerCase().indexOf(f) >= 0;
+    });
+    $('races').innerHTML = shown.map(function (r) {
+      return '<div class="race"><div class="row"><b>' + esc(r.name) + '</b>' +
+        '<small class="' + r.status + '">' + STATUS[r.status] + (r.results ? ' · ' + r.results.toLocaleString() : '') + '</small></div>' +
+        '<small>' + esc(r.id) + '</small><div class="chips">' +
+        r.divisions.map(function (d) {
+          var name = d.division || d.prefix;
+          var sel = board && board.code === d.code ? ' sel' : '';
+          return '<button type="button" class="chip' + sel + '" data-code="' + esc(d.code) + '"' +
+            (d.status === 'available' ? '' : ' disabled') + ' title="' + esc(d.label) + '">' +
+            esc(name) + (d.results ? ' · ' + d.results.toLocaleString() : '') + '</button>';
+        }).join('') + '</div></div>';
+    }).join('') + (shown.length ? '' : '<p class="sub">Sin carreras.</p>');
+  }
+
+  $('season').addEventListener('change', loadRaces);
+  $('raceFilter').addEventListener('input', renderRaces);
+  $('races').addEventListener('click', function (e) {
+    var c = e.target.closest('.chip'); if (!c || c.disabled) return;
+    board = { code: c.dataset.code, offset: 0, q: '' };
+    $('boardFilter').value = '';
+    renderRaces();
+    loadBoard(false);
+  });
+
+  var filterTimer;
+  $('boardFilter').addEventListener('input', function () {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(function () { board.q = $('boardFilter').value.trim(); board.offset = 0; loadBoard(false); }, 300);
+  });
+  $('more').addEventListener('click', function () { loadBoard(true); });
+
+  function loadBoard(append) {
+    var p = new URLSearchParams({ code: board.code, limit: '50', offset: String(board.offset) });
+    if (board.q) p.set('q', board.q);
+    var url = '/api/event?' + p;
+    if (!append) { $('list').innerHTML = ''; $('detail').innerHTML = ''; hits = []; }
+    status('Cargando clasificación… ' + esc(url));
+    call(url).then(function (res) {
+      if (!res.ok) { status(res.code + ' · ' + esc(res.body.error || ''), true); return; }
+      var from = hits.length;
+      hits = hits.concat(res.body.results || []);
+      board.offset = hits.length;
+      var ev = res.body.event;
+      status('<span class="badge db">db</span>' + esc(ev.place || ev.label) + ' · ' + esc(ev.division || ev.prefix) + ' · ' +
+        hits.length + ' de ' + res.body.total + ' · ' + res.ms + ' ms · ' + esc(url));
+      var old = $('list').querySelector('details'); if (old) old.remove();
+      $('list').insertAdjacentHTML('beforeend', hitsHtml(res.body.results || [], from) + raw(res.body));
+      $('boardBar').hidden = false;
+      $('moreBar').hidden = hits.length >= res.body.total;
+    });
+  }
 
   // ?q=... en la URL lanza la búsqueda directamente (útil para compartir un enlace)
   var q = new URLSearchParams(location.search).get('q');
