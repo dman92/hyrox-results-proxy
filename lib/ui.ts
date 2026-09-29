@@ -278,10 +278,10 @@ export const UI_HTML = String.raw`<!doctype html>
     var who = d.members && d.members.length
       ? d.members.map(function (m) { return esc(m.name) + (m.nationality ? ' (' + esc(m.nationality) + ')' : ''); }).join(' · ')
       : esc(d.nationality || '');
-    var place = [d.city, d.year].filter(Boolean).join(' ') || hit.eventLabel || '';
+    var place = hit.place || [d.city, d.year].filter(Boolean).join(' ');
     $('detail').innerHTML = '<div class="card">' +
       '<div class="row"><h2>' + esc(d.name || hit.name) + '</h2></div>' +
-      '<div class="meta">' + [esc(place), esc(d.divisionLabel || hit.division || ''), esc(d.ageGroup || ''), who].filter(Boolean).join(' · ') + '</div>' +
+      '<div class="meta">' + [esc(place), esc(hit.eventLabel || d.divisionLabel || hit.division || ''), esc(d.ageGroup || ''), who].filter(Boolean).join(' · ') + '</div>' +
       '<div class="kpis">' +
         '<div>Total<b>' + fmt(total) + '</b></div>' +
         '<div>Runs<b>' + fmt(runs.length ? sum(runs) : null) + '</b></div>' +
@@ -359,12 +359,15 @@ export const UI_HTML = String.raw`<!doctype html>
     $('races').innerHTML = shown.map(function (r) {
       return '<div class="race"><div class="row"><b>' + esc(r.name) + '</b>' +
         '<small class="' + r.status + '">' + STATUS[r.status] + (r.results ? ' · ' + r.results.toLocaleString() : '') + '</small></div>' +
-        '<small>' + esc([r.place ? r.divisions[0].label : '', r.id].filter(Boolean).join(' · ')) + '</small><div class="chips">' +
+        '<small>' + r.divisions.length + (r.divisions.length === 1 ? ' evento' : ' eventos') + '</small><div class="chips">' +
         r.divisions.map(function (d) {
-          var name = d.division || d.prefix;
+          // "HYROX DOUBLES - Saturday" -> "Doubles - Saturday"; "HYROX" -> "Open"
+          var name = d.label.replace(/^HYROX\s*/i, '').replace(/^-\s*/, '').toLowerCase()
+            .replace(/(^|[\s-])\S/g, function (c) { return c.toUpperCase(); });
+          name = !name ? 'Open' : /^-|^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/.test(name) ? 'Open - ' + name : name;
           var sel = board && board.code === d.code ? ' sel' : '';
           return '<button type="button" class="chip' + sel + '" data-code="' + esc(d.code) + '"' +
-            (d.status === 'available' ? '' : ' disabled') + ' title="' + esc(d.label) + '">' +
+            (d.status === 'available' ? '' : ' disabled') + ' title="' + esc(d.code) + '">' +
             esc(name) + (d.results ? ' · ' + d.results.toLocaleString() : '') + '</button>';
         }).join('') + '</div></div>';
     }).join('') + (shown.length ? '' : '<p class="sub">Sin carreras.</p>');
@@ -399,7 +402,7 @@ export const UI_HTML = String.raw`<!doctype html>
       hits = hits.concat(res.body.results || []);
       board.offset = hits.length;
       var ev = res.body.event;
-      status('<span class="badge db">db</span>' + esc(ev.place || ev.label) + ' · ' + esc(ev.division || ev.prefix) + ' · ' +
+      status('<span class="badge db">db</span>' + esc([ev.place, ev.label].filter(Boolean).join(' · ')) + ' · ' +
         hits.length + ' de ' + res.body.total + ' · ' + res.ms + ' ms · ' + esc(url));
       var old = $('list').querySelector('details'); if (old) old.remove();
       $('list').insertAdjacentHTML('beforeend', hitsHtml(res.body.results || [], from) + raw(res.body));

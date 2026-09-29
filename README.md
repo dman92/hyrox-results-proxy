@@ -61,25 +61,20 @@ cuando el prefijo del evento no es una división conocida (HD1, HA, HY3…).
 Solo con base de datos: son los eventos que ha descubierto la ingesta.
 
 - Sin parámetros: temporadas disponibles, con número de carreras y resultados.
-- `?season=season-9`: carreras de esa temporada, en el orden del desplegable de la web
-  (no hay fechas). La web lista cada división como un evento aparte (`H_X`, `HPRO_X`,
-  `HD_X`…); aquí se agrupan por la parte común del código (`id: "X"`).
+- `?season=season-9`: carreras de esa temporada agrupadas por sede, en el orden del
+  desplegable de la web (de la más reciente a la más antigua; no hay fechas). La sede
+  sale del `<optgroup>` de ese desplegable ("2026 Stockholm"); cada sede tiene un
+  evento por división y día ("HYROX DOUBLES - Saturday"), que no siempre comparten
+  código. Sin sede conocida se agrupa por la parte común del código.
 
 ```
 /api/events?season=season-8
-→ { season, count, races: [ { id, season, name, place, status, results,
-      divisions: [ { code, division, prefix, label, results, status } ] } ] }
+→ { season, count, races: [ { id, season, name: "2026 Stockholm", place, status, results,
+      divisions: [ { code, division, prefix, label: "HYROX DOUBLES - Saturday", results, status } ] } ] }
 ```
 
 `status`: `available` (con resultados), `upcoming` (publicada, aún sin resultados) o
-`pending` (todavía no descargada).
-
-La etiqueta del desplegable de la web suele ser solo el día (`HYROX - Saturday`), y los
-listados no traen la sede. La ficha de detalle sí (`Race: 2026 Bangkok`), así que la
-ingesta pide **una ficha por carrera** (`--places`, 40 por ejecución por defecto) y
-guarda `place` ("Bangkok 2026") en todas sus divisiones; `/api/athlete` también la
-rellena al abrir cualquier resultado. Con sede, `name` es `"Bangkok 2026 · Saturday"`;
-sin ella, la etiqueta de la web. Los hits de búsqueda y clasificación traen `place`.
+`pending` (todavía no descargada). Los hits de búsqueda y clasificación traen `place`.
 
 ### `GET /api/event`
 

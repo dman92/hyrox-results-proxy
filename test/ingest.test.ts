@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
-import { run, parseArgs } from '../scripts/ingest.ts';
+import { run, parseArgs, parseEventOptions } from '../scripts/ingest.ts';
 import { pendingEventCodes, searchDb, type Query } from '../lib/db.ts';
 
 // Web falsa con el mismo marcado que results.hyrox.com (ver lib/hyrox.ts parseListRows)
 const selectPage = (codes: string[]) =>
-  `<select name="event">${codes.map((c) => `<option value="${c}">2025 Valencia ${c}</option>`).join('')}</select>`;
+  `<select name="event"><optgroup label="2025 Valencia">${codes.map((c) => `<option value="${c}">HYROX ${c}</option>`).join('')}</optgroup></select>`;
 
 const listPage = (prefix: string, from: number, count: number) =>
   '<ul>' +
@@ -29,11 +29,6 @@ function fakeHyrox() {
     calls.push(url);
     const event = url.searchParams.get('event');
     const page = Number(url.searchParams.get('page') ?? 1);
-    if (url.searchParams.get('content') === 'detail') {
-      // Ficha por evento: la sede va en "Race" con el año delante
-      return new Response('<table><tr><th>Race</th><td>2025 Valencia</td></tr>' +
-        '<tr><th>Name</th><td>Atleta1, Nombre</td></tr></table>');
-    }
     if (!event) return new Response(selectPage(['H_A', 'H_A_OVERALL', 'HD1_B', 'H_BAD', 'H_FUTURE']));
     if (event === 'H_FUTURE') return new Response('<p>No results</p>');
     if (event === 'H_BAD') return new Response('boom', { status: 404 });
@@ -65,8 +60,9 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     assert.equal((await db('SELECT count(*)::int AS n FROM results'))[0].n, 151);
     // El evento roto y el que aún no tiene resultados siguen pendientes
     assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))].sort(), ['H_BAD', 'H_FUTURE']);
-    // Las sedes se piden al principio de la ejecución: en la primera aún no había resultados
+    // La sede sale del <optgroup> del desplegable: ni una petición de más
     assert.ok(!calls.some((u) => u.searchParams.get('content') === 'detail'));
+    assert.equal((await db(`SELECT place FROM events WHERE code = 'H_A'`))[0].place, '2025 Valencia');
 
     const hits = await searchDb(db, 'atleta150', { limit: 5 });
     assert.equal(hits.length, 1);
@@ -78,17 +74,10 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     calls.length = 0;
     const second = await run(args, db);
     assert.deepEqual(second, { rows: 0, failures: 1 });
-    const lists = new Set(calls.filter((u) => !u.searchParams.get('content')).map((u) => u.searchParams.get('event')).filter(Boolean));
+    const lists = new Set(calls.map((u) => u.searchParams.get('event')).filter(Boolean));
     assert.deepEqual([...lists].sort(), ['H_BAD', 'H_FUTURE']);
-    // Una ficha por carrera con resultados (A y B), con el mejor clasificado
-    const details = calls.filter((u) => u.searchParams.get('content') === 'detail');
-    assert.deepEqual(details.map((u) => [u.searchParams.get('event'), u.searchParams.get('idp')]).sort(),
-      [['HD1_B', 'B1'], ['H_A', 'A1']]);
-    assert.deepEqual((await db(`SELECT place FROM events WHERE code = 'H_A'`))[0].place, 'Valencia 2025');
-    assert.equal((await db(`SELECT count(*)::int AS n FROM details`))[0].n, 0); // ficha incompleta: no se cachea
 
-    // Sin tiempo: no empieza ningún evento (ni pide sedes)
-    await db(`UPDATE events SET place = NULL`);
+    // Sin tiempo: no empieza ningún evento
     calls.length = 0;
     await run(parseArgs(['--season', '8', '--rate', '1000', '--max-minutes', '0.000001']), db);
     assert.ok(!calls.some((u) => u.searchParams.get('event')));
@@ -96,4 +85,29 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     await db('DROP TABLE IF EXISTS results, events, details');
     await pool.end();
   }
+});
+
+test('parseEventOptions: sede del optgroup, etiqueta de la opción y sin _OVERALL', () => {
+  // Estructura real del desplegable de results.hyrox.com/season-8/?pid=list (recortado)
+  const html = `<select name="event" id="event">
+    <optgroup label="2026 Stockholm">
+      <option value="HE_LR3MS4JI1646">HYROX ELITE 15 - Thursday</option>
+      <option value="HD1_LR3MS4JI163B">HYROX DOUBLES - Saturday</option>
+    </optgroup>
+    <optgroup label="2026 Berlin">
+      <option value="HPRO_LR3MS4JI1632">HYROX PRO - Fri, 22 May</option>
+      <option value="HPRO_BER26_OVERALL">HYROX PRO - Overall</option>
+    </optgroup>
+    <optgroup label="2025 Singapore"><option value="H_LR3MS4JIBB9">HYROX</option></optgroup>
+  </select>
+  <select name="ranking"><option value="time_finish_netto">Total</option></select>`;
+  assert.deepEqual(parseEventOptions(html), [
+    { code: 'HE_LR3MS4JI1646', label: 'HYROX ELITE 15 - Thursday', place: '2026 Stockholm' },
+    { code: 'HD1_LR3MS4JI163B', label: 'HYROX DOUBLES - Saturday', place: '2026 Stockholm' },
+    { code: 'HPRO_LR3MS4JI1632', label: 'HYROX PRO - Fri, 22 May', place: '2026 Berlin' },
+    { code: 'H_LR3MS4JIBB9', label: 'HYROX', place: '2025 Singapore' },
+  ]);
+  // Sin optgroup, sede null
+  assert.deepEqual(parseEventOptions('<select name="event"><option value="H_X">HYROX</option></select>'),
+    [{ code: 'H_X', label: 'HYROX', place: null }]);
 });

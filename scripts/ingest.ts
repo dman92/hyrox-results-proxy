@@ -21,10 +21,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import * as cheerio from 'cheerio';
-import { detailUrl, parseDetail, parseListRows, splitEventCode, USER_AGENT, type ListRow } from '../lib/hyrox.ts';
-import {
-  getDb, migrate, pendingEventCodes, racesWithoutPlace, saveDetail, saveEventRows, setEventPlace, upsertEvents, type Query,
-} from '../lib/db.ts';
+import { parseListRows, splitEventCode, USER_AGENT, type ListRow } from '../lib/hyrox.ts';
+import { getDb, migrate, pendingEventCodes, saveEventRows, upsertEvents, type Query } from '../lib/db.ts';
 
 const BASE = 'https://results.hyrox.com';
 const PAGE_SIZE = 100;
@@ -34,13 +32,12 @@ const MAX_CONSECUTIVE_FAILURES = 5;
 
 export interface Args {
   seasons: string[]; rate: number; maxEvents: number | null; outDir: string;
-  maxMinutes: number | null; refreshDays: number; places: number;
+  maxMinutes: number | null; refreshDays: number;
 }
 
 export function parseArgs(argv: string[]): Args {
   const seasons: string[] = [];
   let rate = 2, maxEvents: number | null = null, outDir = OUT_DIR, maxMinutes: number | null = null, refreshDays = 10;
-  let places = 40;
   for (let i = 0; i < argv.length; i++) {
     const next = () => argv[++i];
     if (argv[i] === '--season') seasons.push(`season-${next().replace(/^season-/, '')}`);
@@ -49,10 +46,9 @@ export function parseArgs(argv: string[]): Args {
     else if (argv[i] === '--out') outDir = next();
     else if (argv[i] === '--max-minutes') maxMinutes = Number(next());
     else if (argv[i] === '--refresh-days') refreshDays = Number(next());
-    else if (argv[i] === '--places') places = Number(next());
   }
   if (seasons.length === 0) throw new Error('Falta --season <n> (repetible)');
-  return { seasons, rate, maxEvents, outDir, maxMinutes, refreshDays, places };
+  return { seasons, rate, maxEvents, outDir, maxMinutes, refreshDays };
 }
 
 let requestCount = 0;
@@ -83,22 +79,30 @@ async function get(url: string, minIntervalMs: number): Promise<string> {
   throw new Error(`sin respuesta tras 3 intentos: ${url}`);
 }
 
+interface ListedEvent { code: string; label: string; place: string | null }
+
 /** Los códigos de evento salen del selector: los prefijos de división no son
- *  deducibles (HD, HD1, HA, HDP, HMR, HE, HY3, THD, WCHE...). */
-async function listEvents(season: string, rate: number): Promise<{ code: string; label: string }[]> {
-  const html = await get(`${BASE}/${season}/?pid=list`, 1000 / rate);
+ *  deducibles (HD, HD1, HA, HDP, HMR, HE, HY3, THD, WCHE...). Cada opción va
+ *  dentro de un <optgroup> con la sede ("2026 Stockholm"); la etiqueta de la
+ *  opción es la división y el día ("HYROX DOUBLES - Saturday"). */
+export function parseEventOptions(html: string): ListedEvent[] {
   const $ = cheerio.load(html);
-  const events: { code: string; label: string }[] = [];
+  const events: ListedEvent[] = [];
   $('select[name="event"] option').each((_, el) => {
     const code = ($(el).attr('value') ?? '').trim();
     const label = $(el).text().replace(/\s+/g, ' ').trim();
+    const place = $(el).parent('optgroup').attr('label')?.replace(/\s+/g, ' ').trim() || null;
     // Los *_OVERALL son rankings agregados por sede, no resultados fuente:
     // repiten a los mismos atletas con otro idp y su paginacion da la vuelta
     // en lugar de acabar (30.000 filas = 7.500 registros x4). Fuera.
     // Ojo: también hay variantes con sufijo (HDP_PARIS25_OVERALL_2).
-    if (code && !code.includes('_OVERALL')) events.push({ code, label });
+    if (code && !code.includes('_OVERALL')) events.push({ code, label, place });
   });
   return events;
+}
+
+async function listEvents(season: string, rate: number): Promise<ListedEvent[]> {
+  return parseEventOptions(await get(`${BASE}/${season}/?pid=list`, 1000 / rate));
 }
 
 /** Descarga todas las páginas de un evento. Devuelve cada idp una sola vez. */
@@ -129,43 +133,11 @@ async function fetchEventRows(season: string, code: string, minInterval: number)
   return rows;
 }
 
-/**
- * Los listados por evento no dicen la sede, y la etiqueta del desplegable suele ser
- * solo el día ("HYROX - Saturday"). La ficha de detalle sí la trae ("Race: 2026
- * Bangkok"), así que basta con una ficha por carrera. Cada una es una petición en frío
- * (~30 s), por eso va limitado a `max` por ejecución. La ficha se guarda también en la
- * caché de /api/athlete.
- */
-async function fillPlaces(db: Query, max: number, deadline: number, minInterval: number): Promise<number> {
-  if (max <= 0) return 0;
-  const todo = await racesWithoutPlace(db, max);
-  if (todo.length === 0) return 0;
-  console.log(`\nSedes: ${todo.length} carreras sin nombre de sede`);
-  let done = 0;
-  for (const race of todo) {
-    if (Date.now() > deadline) break;
-    const { division } = splitEventCode(race.code);
-    const url = detailUrl(race.idp, division ?? 'open', null, race.season, race.code);
-    try {
-      const detail = parseDetail(await get(url, minInterval), race.idp, division ?? 'open');
-      const place = [detail.city, detail.year].filter(Boolean).join(' ');
-      // '' si la ficha no la trae: queda marcada y no se vuelve a pedir en cada ejecución
-      await setEventPlace(db, race.code, place);
-      if (detail.validation.ok) await saveDetail(db, url, detail);
-      if (place) done++;
-      console.log(`  ${race.season} ${race.code.padEnd(22)} ${place || '(sin sede en la ficha)'}`);
-    } catch (err) {
-      console.error(`  ${race.code}: ${(err as Error).message}`);
-    }
-  }
-  return done;
-}
-
 /** Dónde se guarda cada evento y cómo se sabe qué falta. */
 export interface Sink {
   describe(season: string): string;
-  pending(season: string, events: { code: string; label: string }[]): Promise<{ code: string; label: string }[]>;
-  save(season: string, event: { code: string; label: string }, rows: ListRow[]): Promise<void>;
+  pending(season: string, events: ListedEvent[]): Promise<ListedEvent[]>;
+  save(season: string, event: ListedEvent, rows: ListRow[]): Promise<void>;
 }
 
 export function dbSink(db: Query, refreshDays: number): Sink {
@@ -214,8 +186,6 @@ export async function run(args: Args, injectedDb?: Query | null): Promise<{ rows
 
   const db = injectedDb === undefined ? getDb() : injectedDb;
   if (db) await migrate(db);
-  // Primero unas pocas sedes: así los nombres aparecen aunque la carga inicial tarde días
-  if (db) await fillPlaces(db, args.places, deadline, minInterval);
   const sink = db ? dbSink(db, args.refreshDays) : fileSink(args.outDir);
 
   for (const season of args.seasons) {
