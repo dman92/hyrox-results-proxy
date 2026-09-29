@@ -97,63 +97,59 @@ export function matchesPerson(query: string[], person: string): boolean {
  * Descarta las filas donde las palabras solo encajan repartidas entre dos
  * integrantes ("david" en uno y "manso" en "Mansouri" del otro).
  *
- * Dos formas se consideran la misma persona si las palabras de una están todas en la
- * otra ("David Manso" ⊂ "David Manso Garcia"). Sin un ID de atleta en la web, es la
- * mejor aproximación: dos homónimos exactos saldrán juntos.
+ * Primero agrupa por nombre exacto (sin acentos ni mayúsculas, en cualquier orden).
+ * Después une una forma corta con una más larga solo si es inequívoco: "David Manso"
+ * se une a "David Manso Garcia" si es la única forma más larga que la contiene. Si
+ * cabe en dos distintas ("Alba Gomez" en "Alba Gomez Garcia" y en "Alba Gomez Lopez")
+ * se queda aparte. El resultado no depende del orden de las filas.
  */
 export function groupAthletes<H extends HitLike>(q: string, hits: H[]): AthleteGroup<H>[] {
   const query = tokens(q);
   if (query.length === 0) return [];
 
   type Entry = { words: Set<string>; forms: Map<string, number>; results: AthleteResult<H>[] };
-  const entries: Entry[] = [];
+  const byKey = new Map<string, Entry>();
 
   for (const hit of hits) {
     const people = members(hit);
     for (const person of people) {
       if (!matchesPerson(query, person)) continue;
-      const words = new Set(tokens(person));
-      const partners = people.filter((p) => p !== person);
-      // Busca un grupo compatible (una forma contiene a la otra)
-      let entry = entries.find((e) => isSubset(words, e.words) || isSubset(e.words, words));
+      const words = tokens(person);
+      const key = [...new Set(words)].sort().join(' ');
+      let entry = byKey.get(key);
       if (!entry) {
-        entry = { words, forms: new Map(), results: [] };
-        entries.push(entry);
-      } else if (words.size > entry.words.size) {
-        entry.words = words;
+        entry = { words: new Set(words), forms: new Map(), results: [] };
+        byKey.set(key, entry);
       }
       entry.forms.set(person, (entry.forms.get(person) ?? 0) + 1);
-      entry.results.push({ hit, as: person, partners });
+      entry.results.push({ hit, as: person, partners: people.filter((p) => p !== person) });
     }
   }
 
-  // Un grupo puede quedar contenido en otro que creció después: se funden
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const j = entries.findIndex((e, k) => k !== i && (isSubset(entries[i].words, e.words) || isSubset(e.words, entries[i].words)));
-    if (j >= 0) {
-      const [a, b] = [entries[j], entries[i]];
-      if (b.words.size > a.words.size) a.words = b.words;
-      for (const [f, n] of b.forms) a.forms.set(f, (a.forms.get(f) ?? 0) + n);
-      a.results.push(...b.results);
-      entries.splice(i, 1);
-    }
+  // De la forma más corta a la más larga: cada una se une a la más larga que la contiene,
+  // siempre que todas las que la contienen estén a su vez dentro de esa (una cadena).
+  const entries = [...byKey.values()].sort((a, b) => a.words.size - b.words.size);
+  const merged = new Set<Entry>();
+  for (const small of entries) {
+    const supers = entries.filter((e) => e !== small && !merged.has(e) && e.words.size > small.words.size && isSubset(small.words, e.words));
+    if (supers.length === 0) continue;
+    const largest = supers.reduce((a, b) => (b.words.size > a.words.size ? b : a));
+    if (!supers.every((s) => isSubset(s.words, largest.words))) continue; // ambiguo
+    for (const [f, n] of small.forms) largest.forms.set(f, (largest.forms.get(f) ?? 0) + n);
+    largest.results.push(...small.results);
+    merged.add(small);
   }
 
-  const exact = (e: Entry) => [...e.forms.keys()].some((f) => tokens(f).sort().join(' ') === [...query].sort().join(' '));
+  const q0 = [...new Set(query)].sort().join(' ');
+  const exact = (e: Entry) => [...e.forms.keys()].some((f) => [...new Set(tokens(f))].sort().join(' ') === q0);
   return entries
+    .filter((e) => !merged.has(e))
     .map((e) => {
-      const variants = [...e.forms.keys()].sort((a, b) => tokens(b).length - tokens(a).length || (e.forms.get(b)! - e.forms.get(a)!));
-      return {
-        entry: e,
-        group: {
-          key: [...e.words].sort().join(' '),
-          name: variants[0],
-          variants,
-          results: e.results,
-        },
-      };
+      const variants = [...e.forms.keys()].sort((a, b) => tokens(b).length - tokens(a).length || e.forms.get(b)! - e.forms.get(a)!);
+      return { exact: exact(e), group: { key: [...e.words].sort().join(' '), name: variants[0], variants, results: e.results } };
     })
-    .sort((a, b) => Number(exact(b.entry)) - Number(exact(a.entry)) || b.group.results.length - a.group.results.length)
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || b.group.results.length - a.group.results.length
+      || a.group.name.localeCompare(b.group.name))
     .map((x) => x.group);
 }
 

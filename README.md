@@ -36,9 +36,12 @@ respuesta indica `source: "db"` o `"live"`.
 así que una búsqueda solo cuenta si todas sus palabras encajan en **la misma persona**
 (con "david manso" no sale "Karim Mansouri, David Martin"). La respuesta de la base de
 datos trae `athletes`: una entrada por persona con sus carreras, cada una con `as` (cómo
-aparece en esa carrera) y `partners` (compañeros). Las formas de un mismo nombre se
-agrupan si una contiene a la otra ("David Manso" ⊂ "David Manso Garcia"); sin ID de
-atleta en la web, dos homónimos exactos salen juntos.
+aparece en esa carrera) y `partners` (compañeros). Se agrupa por nombre exacto (sin
+acentos ni mayúsculas, en cualquier orden), y una forma corta se une a una más larga
+solo si es inequívoco: "David Manso" se une a "David Manso Garcia" si es la única forma
+más larga que la contiene; si cabe en dos ("Lucia Perez" en "Lucía Pérez García" y en
+"Lucia Perez Lopez") queda aparte. Sin ID de atleta en la web, dos homónimos exactos
+salen juntos.
 
 ```
 /api/search?q=david%20manso
