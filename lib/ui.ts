@@ -156,15 +156,61 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
 
+  var athletes = null, lastSearch = null;
+
+  function renderAthletes() {
+    $('list').innerHTML = athletes.map(function (a, i) {
+      var divs = {}, seasons = {};
+      a.results.forEach(function (r) { divs[r.division || r.event.split('_')[0]] = 1; seasons[r.season.replace('season-', 'T')] = 1; });
+      var partners = uniquePeople(a.results.reduce(function (all, r) { return all.concat(r.partners || []); }, []));
+      return '<button class="hit athlete" data-a="' + i + '">' +
+        '<b>' + esc(a.name) + '</b><span class="t">' + a.count + (a.count === 1 ? ' carrera' : ' carreras') + '</span>' +
+        '<small>' + esc(Object.keys(divs).join(' · ')) + ' · ' + esc(Object.keys(seasons).join(', ')) + '</small>' +
+        '<small>' + esc(a.variants.length > 1 ? 'También como: ' + a.variants.slice(1).join(', ') : '') + '</small>' +
+        (partners.length ? '<small style="grid-column:1/-1">Con ' + esc(partners.join(', ')) + '</small>' : '') +
+        '</button>';
+    }).join('') + raw(lastSearch);
+  }
+
+  // "Lucia Perez" y "Lucía Pérez García" son la misma persona: se queda la forma más completa
+  function uniquePeople(names) {
+    var words = function (n) { return n.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean); };
+    var sub = function (a, b) { return a.every(function (w) { return b.indexOf(w) >= 0; }); };
+    var kept = [];
+    names.forEach(function (n) {
+      var w = words(n), i = kept.findIndex(function (k) { return sub(w, k.w) || sub(k.w, w); });
+      if (i < 0) kept.push({ n: n, w: w });
+      else if (w.length > kept[i].w.length) kept[i] = { n: n, w: w };
+    });
+    return kept.map(function (k) { return k.n; });
+  }
+
+  function openAthlete(i) {
+    var a = athletes[i];
+    // Paso 2: sus carreras, de la más reciente a la más antigua
+    hits = a.results.slice().sort(function (x, y) {
+      return y.season.localeCompare(x.season, undefined, { numeric: true }) || (x.totalSec || 1e9) - (y.totalSec || 1e9);
+    });
+    $('list').innerHTML = (athletes.length > 1 ? '<button type="button" class="ghost" id="backAthletes">← Otros atletas</button>' : '') +
+      '<div class="card" style="margin-top:8px"><h2>' + esc(a.name) + '</h2><div class="meta">' +
+      a.count + (a.count === 1 ? ' carrera' : ' carreras') + (a.variants.length > 1 ? ' · también como ' + esc(a.variants.slice(1).join(', ')) : '') +
+      '</div></div>' + hitsHtml(hits, 0);
+    $('detail').innerHTML = '';
+    var back = $('backAthletes');
+    if (back) back.addEventListener('click', function () { $('detail').innerHTML = ''; renderAthletes(); });
+  }
+
   function hitsHtml(list, from) {
     return list.map(function (h, k) {
       var i = from + k;
       var where = [h.place || [h.city, h.year].filter(Boolean).join(' '), h.eventLabel].filter(Boolean).join(' · ');
       var extra = [h.division || h.event, h.season, h.ageGroup, h.nationality].filter(Boolean).join(' · ');
+      var title = h.as ? [h.place, h.eventLabel].filter(Boolean).join(' · ') : h.name;
+      var sub = h.as ? (h.partners && h.partners.length ? 'Con ' + h.partners.join(', ') : '') : where;
       return '<button class="hit" data-i="' + i + '">' +
-        '<b>' + (h.rank ? '<span style="color:var(--muted)">#' + h.rank + '</span> ' : '') + esc(h.name) + '</b>' +
+        '<b>' + (h.rank ? '<span style="color:var(--muted)">#' + h.rank + '</span> ' : '') + esc(title) + '</b>' +
         '<span class="t">' + esc(h.totalTime || '–') + '</span>' +
-        '<small>' + esc(where) + '</small><small>' + esc(extra) + '</small></button>';
+        '<small>' + esc(sub) + '</small><small>' + esc(extra) + '</small></button>';
     }).join('');
   }
 
@@ -183,13 +229,25 @@ export const UI_HTML = String.raw`<!doctype html>
     call(url).then(function (res) {
       if (!res.ok) { status(res.code + ' · ' + res.ms + ' ms · ' + esc(res.body.error || '') + ' ' + esc(res.body.hint || res.body.detail || ''), true); return; }
       hits = res.body.hits || [];
+      athletes = res.body.athletes || null;
       var src = res.body.source || 'live';
-      status('<span class="badge ' + src + '">' + src + '</span>' + hits.length + ' resultados · ' + res.ms + ' ms · ' + esc(url));
+      var head = '<span class="badge ' + src + '">' + src + '</span>';
+      if (athletes && athletes.length) {
+        // Paso 1: elige la persona
+        status(head + athletes.length + (athletes.length === 1 ? ' atleta' : ' atletas') + ' · ' + res.ms + ' ms · ' + esc(url));
+        lastSearch = res.body;
+        renderAthletes();
+        if (athletes.length === 1) openAthlete(0);
+        return;
+      }
+      status(head + hits.length + ' resultados · ' + res.ms + ' ms · ' + esc(url));
       $('list').innerHTML = hitsHtml(hits, 0) + (hits.length ? '' : '<p class="sub">Sin resultados.</p>') + raw(res.body);
     }).catch(function (err) { status('Error de red: ' + esc(err.message), true); });
   });
 
   $('list').addEventListener('click', function (e) {
+    var ab = e.target.closest('.athlete');
+    if (ab) { openAthlete(+ab.dataset.a); return; }
     var b = e.target.closest('.hit'); if (!b) return;
     var h = hits[+b.dataset.i], p = new URLSearchParams({ idp: h.idp });
     if (h.event) p.set('event', h.event);

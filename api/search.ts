@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { search, searchInEvent, DIVISIONS, type Division, UpstreamTimeout } from '../lib/hyrox.js';
 import { getDb, searchDb } from '../lib/db.js';
+import { searchPeople } from '../lib/athletes.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // `q` acepta nombre y apellidos en cualquier orden; `surname` se mantiene por compatibilidad.
@@ -25,10 +26,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const db = getDb();
   if (db && !eventId) {
     try {
-      const hits = await searchDb(db, surname, { division: divisionParam as Division | undefined, limit });
+      // Por persona: descarta filas donde las palabras solo encajan repartidas entre dos
+      // miembros de un equipo, y agrupa las carreras de cada atleta en `athletes`.
+      const { hits, athletes } = await searchPeople(
+        (n) => searchDb(db, surname, { division: divisionParam as Division | undefined, limit: n }),
+        surname,
+        limit,
+      );
       if (hits.length > 0) {
         res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
-        return res.status(200).json({ query: { q: surname, division: divisionParam ?? null }, source: 'db', count: hits.length, hits });
+        return res.status(200).json({
+          query: { q: surname, division: divisionParam ?? null }, source: 'db', count: hits.length, hits, athletes,
+        });
       }
     } catch (err) {
       // Si la base de datos falla, seguimos en vivo en vez de devolver un error.

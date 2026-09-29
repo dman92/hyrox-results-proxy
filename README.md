@@ -32,6 +32,21 @@ respuesta indica `source: "db"` o `"live"`.
 → { count: 19, hits: [ { idp, rank, name, nationality, city, year, totalTime, totalSec } ] }
 ```
 
+**Por persona.** En dobles y relevos cada fila es el equipo ("David Manso, Lucía Pérez"),
+así que una búsqueda solo cuenta si todas sus palabras encajan en **la misma persona**
+(con "david manso" no sale "Karim Mansouri, David Martin"). La respuesta de la base de
+datos trae `athletes`: una entrada por persona con sus carreras, cada una con `as` (cómo
+aparece en esa carrera) y `partners` (compañeros). Las formas de un mismo nombre se
+agrupan si una contiene a la otra ("David Manso" ⊂ "David Manso Garcia"); sin ID de
+atleta en la web, dos homónimos exactos salen juntos.
+
+```
+/api/search?q=david%20manso
+→ { source: "db", hits: [...], athletes: [ { key, name: "David Manso Garcia",
+      variants: ["David Manso Garcia", "David Manso"], count: 3,
+      results: [ { ...hit, as: "David Manso", partners: ["Lucía Pérez"] } ] } ] }
+```
+
 Los hits de la base de datos traen además `event` (código completo del evento, p. ej.
 `HPRO_LR3MS4JIAA2`), `eventLabel` y `season`. Para pedir el detalle basta con
 `/api/athlete?idp=…&event=…&season=…`. `division` y `eventId` pueden venir `null`

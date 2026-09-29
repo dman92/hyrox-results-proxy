@@ -95,7 +95,8 @@ async function listEvents(season: string, rate: number): Promise<{ code: string;
     // Los *_OVERALL son rankings agregados por sede, no resultados fuente:
     // repiten a los mismos atletas con otro idp y su paginacion da la vuelta
     // en lugar de acabar (30.000 filas = 7.500 registros x4). Fuera.
-    if (code && !code.endsWith('_OVERALL')) events.push({ code, label });
+    // Ojo: también hay variantes con sufijo (HDP_PARIS25_OVERALL_2).
+    if (code && !code.includes('_OVERALL')) events.push({ code, label });
   });
   return events;
 }
