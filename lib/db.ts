@@ -62,6 +62,10 @@ export const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS results_name_trgm ON results USING gin ((' ' || name_norm) gin_trgm_ops)`,
   // Versiones anteriores marcaban como completos los eventos sin filas: se reabren.
   `UPDATE events SET completed_at = NULL WHERE row_count = 0 AND completed_at IS NOT NULL`,
+  // Versiones anteriores dejaban pasar rankings agregados con sufijo (HDP_PARIS25_OVERALL_2),
+  // que repiten a los mismos atletas con otro idp. Se borran.
+  `DELETE FROM results WHERE event_code IN (SELECT code FROM events WHERE strpos(code, '_OVERALL') > 0)`,
+  `DELETE FROM events WHERE strpos(code, '_OVERALL') > 0`,
   // Orden del desplegable de la web (sirve para ordenar carreras, que no traen fecha)
   `ALTER TABLE events ADD COLUMN IF NOT EXISTS position integer`,
   // Sede y año ("Valencia 2025"), sacados de la primera ficha de detalle que se consulta
