@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { detail, detailUrl, DIVISIONS, splitEventCode, type Division, type RaceDetail, UpstreamTimeout } from '../lib/hyrox.js';
-import { getCachedDetail, getDb, saveDetail, setEventPlace } from '../lib/db.js';
+import { ensureSchema, getCachedDetail, getDb, saveDetail, setEventPlace } from '../lib/db.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const idp = String(req.query.idp ?? '').trim();
@@ -62,7 +62,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const code = event ?? (eventId ? `${DIVISIONS[division]}_${eventId}` : null);
       const place = [race.city, race.year].filter(Boolean).join(' ');
       if (code && place) {
-        await setEventPlace(db, code, place).catch((err) => console.error('setEventPlace falló:', err.message));
+        await ensureSchema(db)
+          .then(() => setEventPlace(db, code, place))
+          .catch((err) => console.error('setEventPlace falló:', err.message));
       }
     }
 

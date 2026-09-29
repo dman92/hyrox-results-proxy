@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { eventResults, getDb } from '../lib/db.js';
+import { ensureSchema, eventResults, getDb } from '../lib/db.js';
 
 /**
  * GET /api/event?code=HPRO_LR3MS4JIAA2[&q=nombre][&limit=50][&offset=0]
@@ -19,6 +19,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const offset = Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0);
 
   try {
+    await ensureSchema(db);
     const { event, total, results } = await eventResults(db, code, { q, limit, offset });
     if (!event) return res.status(404).json({ error: 'Evento no encontrado' });
     res.setHeader('Cache-Control', 'public, s-maxage=600, stale-while-revalidate=3600');

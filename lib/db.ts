@@ -77,6 +77,17 @@ export async function migrate(db: Query): Promise<void> {
   for (const statement of SCHEMA) await db(statement);
 }
 
+let schemaReady: Promise<void> | null = null;
+
+/**
+ * Para la API: aplica el esquema una vez por instancia antes de usar columnas
+ * nuevas, sin esperar a que arranque la siguiente ingesta. Es idempotente.
+ */
+export function ensureSchema(db: Query): Promise<void> {
+  schemaReady ??= migrate(db).catch((err) => { schemaReady = null; throw err; });
+  return schemaReady;
+}
+
 // --------------------------------------------------------------------------- nombres
 
 /** "Pérez García, Ana" -> ['perez', 'garcia', 'ana'] */

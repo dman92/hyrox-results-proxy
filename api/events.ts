@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb, listRaces, listSeasons } from '../lib/db.js';
+import { ensureSchema, getDb, listRaces, listSeasons } from '../lib/db.js';
 
 /**
  * GET /api/events                 -> temporadas disponibles
@@ -16,6 +16,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    await ensureSchema(db);
     // Cambia cuando la ingesta añade carreras o resultados: caché corta.
     res.setHeader('Cache-Control', 'public, s-maxage=600, stale-while-revalidate=3600');
     if (!season) return res.status(200).json({ seasons: await listSeasons(db) });
