@@ -78,3 +78,21 @@ test('searchPeople pide más filas si los descartes dejan hueco', async () => {
   assert.deepEqual(asked, [20, 80]); // 20 no bastaban; con 80 se acaban las filas
   assert.equal(res.athletes[0].count, 3);
 });
+
+test('groupAthletes: una forma corta que cabe en dos personas se queda aparte, y no depende del orden', () => {
+  const hits = [
+    hit('Alba Gómez García, David Manso Garcia', 'doubles', 'HYROX DOUBLES', 4648, 'A'),
+    hit('David Manso, Alba Gomez', 'doubles', 'HYROX DOUBLES', 4717, 'B'),
+    hit('Alba Gomez, David Manso', 'doubles', 'HYROX DOUBLES', 5264, 'C'),
+    hit('Alba Gomez Lopez, Eva Ruiz', 'doubles', 'HYROX DOUBLES', 5000, 'D'),
+    hit('Alba Gomez Lopez, Eva Ruiz', 'doubles', 'HYROX DOUBLES', 5100, 'E'),
+  ];
+  const summary = (hs: typeof hits) => groupAthletes('alba gomez', hs).map((g) => [g.name, g.results.map((r) => r.hit.idp).sort().join('')]);
+  const expected = [['Alba Gomez', 'BC'], ['Alba Gomez Lopez', 'DE'], ['Alba Gómez García', 'A']];
+  assert.deepEqual(summary(hits), expected);
+  assert.deepEqual(summary([...hits].reverse()), expected);
+  // Sin la otra Alba ya es inequívoco
+  assert.deepEqual(summary(hits.slice(0, 3)), [['Alba Gómez García', 'ABC']]);
+  // Y David sigue siendo uno con sus 3 carreras en cualquier orden
+  assert.deepEqual(groupAthletes('david manso', [...hits].reverse()).map((g) => [g.name, g.results.length]), [['David Manso Garcia', 3]]);
+});

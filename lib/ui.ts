@@ -49,6 +49,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .hit small { color: var(--muted); }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 12px; }
   .card h2 { margin: 0 0 4px; font-size: 18px; }
+  .athlete-card { padding: 14px 12px 12px; }
+  .athlete-card .hit { background: var(--bg); }
   .meta { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
   .kpis { display: flex; flex-wrap: wrap; gap: 18px; margin: 8px 0 14px; }
   .kpis div { font-size: 12px; color: var(--muted); }
@@ -156,20 +158,27 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
 
-  var athletes = null, lastSearch = null;
+  var athletes = null;
 
-  function renderAthletes() {
-    $('list').innerHTML = athletes.map(function (a, i) {
-      var divs = {}, seasons = {};
-      a.results.forEach(function (r) { divs[r.division || r.event.split('_')[0]] = 1; seasons[r.season.replace('season-', 'T')] = 1; });
-      var partners = uniquePeople(a.results.reduce(function (all, r) { return all.concat(r.partners || []); }, []));
-      return '<button class="hit athlete" data-a="' + i + '">' +
-        '<b>' + esc(a.name) + '</b><span class="t">' + a.count + (a.count === 1 ? ' carrera' : ' carreras') + '</span>' +
-        '<small>' + esc(Object.keys(divs).join(' · ')) + ' · ' + esc(Object.keys(seasons).join(', ')) + '</small>' +
-        '<small>' + esc(a.variants.length > 1 ? 'También como: ' + a.variants.slice(1).join(', ') : '') + '</small>' +
-        (partners.length ? '<small style="grid-column:1/-1">Con ' + esc(partners.join(', ')) + '</small>' : '') +
-        '</button>';
-    }).join('') + raw(lastSearch);
+  // Cada atleta con sus carreras debajo (de la más reciente a la más antigua)
+  function renderAthletes(body) {
+    hits = [];
+    var html = athletes.map(function (a) {
+      var races = a.results.slice().sort(function (x, y) {
+        return y.season.localeCompare(x.season, undefined, { numeric: true }) || (x.totalSec || 1e9) - (y.totalSec || 1e9);
+      });
+      var from = hits.length;
+      hits = hits.concat(races);
+      var partners = uniquePeople(races.reduce(function (all, r) { return all.concat(r.partners || []); }, []));
+      return '<div class="card athlete-card"><div class="row"><h2>' + esc(a.name) + '</h2>' +
+        '<span class="t" style="font-weight:600">' + a.count + (a.count === 1 ? ' carrera' : ' carreras') + '</span></div>' +
+        '<div class="meta">' + [
+          a.variants.length > 1 ? 'También como ' + esc(a.variants.slice(1).join(', ')) : '',
+          partners.length ? 'Con ' + esc(partners.join(', ')) : '',
+        ].filter(Boolean).join(' · ') + '</div>' +
+        '<div class="list">' + hitsHtml(races, from) + '</div></div>';
+    }).join('');
+    $('list').innerHTML = html + raw(body);
   }
 
   // "Lucia Perez" y "Lucía Pérez García" son la misma persona: se queda la forma más completa
@@ -183,21 +192,6 @@ export const UI_HTML = String.raw`<!doctype html>
       else if (w.length > kept[i].w.length) kept[i] = { n: n, w: w };
     });
     return kept.map(function (k) { return k.n; });
-  }
-
-  function openAthlete(i) {
-    var a = athletes[i];
-    // Paso 2: sus carreras, de la más reciente a la más antigua
-    hits = a.results.slice().sort(function (x, y) {
-      return y.season.localeCompare(x.season, undefined, { numeric: true }) || (x.totalSec || 1e9) - (y.totalSec || 1e9);
-    });
-    $('list').innerHTML = (athletes.length > 1 ? '<button type="button" class="ghost" id="backAthletes">← Otros atletas</button>' : '') +
-      '<div class="card" style="margin-top:8px"><h2>' + esc(a.name) + '</h2><div class="meta">' +
-      a.count + (a.count === 1 ? ' carrera' : ' carreras') + (a.variants.length > 1 ? ' · también como ' + esc(a.variants.slice(1).join(', ')) : '') +
-      '</div></div>' + hitsHtml(hits, 0);
-    $('detail').innerHTML = '';
-    var back = $('backAthletes');
-    if (back) back.addEventListener('click', function () { $('detail').innerHTML = ''; renderAthletes(); });
   }
 
   function hitsHtml(list, from) {
@@ -235,9 +229,7 @@ export const UI_HTML = String.raw`<!doctype html>
       if (athletes && athletes.length) {
         // Paso 1: elige la persona
         status(head + athletes.length + (athletes.length === 1 ? ' atleta' : ' atletas') + ' · ' + res.ms + ' ms · ' + esc(url));
-        lastSearch = res.body;
-        renderAthletes();
-        if (athletes.length === 1) openAthlete(0);
+        renderAthletes(res.body);
         return;
       }
       status(head + hits.length + ' resultados · ' + res.ms + ' ms · ' + esc(url));
@@ -246,8 +238,6 @@ export const UI_HTML = String.raw`<!doctype html>
   });
 
   $('list').addEventListener('click', function (e) {
-    var ab = e.target.closest('.athlete');
-    if (ab) { openAthlete(+ab.dataset.a); return; }
     var b = e.target.closest('.hit'); if (!b) return;
     var h = hits[+b.dataset.i], p = new URLSearchParams({ idp: h.idp });
     if (h.event) p.set('event', h.event);
