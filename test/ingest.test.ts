@@ -29,6 +29,11 @@ function fakeHyrox() {
     calls.push(url);
     const event = url.searchParams.get('event');
     const page = Number(url.searchParams.get('page') ?? 1);
+    if (url.searchParams.get('content') === 'detail') {
+      // Ficha por evento: la sede va en "Race" con el año delante
+      return new Response('<table><tr><th>Race</th><td>2025 Valencia</td></tr>' +
+        '<tr><th>Name</th><td>Atleta1, Nombre</td></tr></table>');
+    }
     if (!event) return new Response(selectPage(['H_A', 'H_A_OVERALL', 'HD1_B', 'H_BAD', 'H_FUTURE']));
     if (event === 'H_FUTURE') return new Response('<p>No results</p>');
     if (event === 'H_BAD') return new Response('boom', { status: 404 });
@@ -60,6 +65,8 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     assert.equal((await db('SELECT count(*)::int AS n FROM results'))[0].n, 151);
     // El evento roto y el que aún no tiene resultados siguen pendientes
     assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))].sort(), ['H_BAD', 'H_FUTURE']);
+    // Las sedes se piden al principio de la ejecución: en la primera aún no había resultados
+    assert.ok(!calls.some((u) => u.searchParams.get('content') === 'detail'));
 
     const hits = await searchDb(db, 'atleta150', { limit: 5 });
     assert.equal(hits.length, 1);
@@ -71,10 +78,17 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     calls.length = 0;
     const second = await run(args, db);
     assert.deepEqual(second, { rows: 0, failures: 1 });
-    const events = new Set(calls.map((u) => u.searchParams.get('event')).filter(Boolean));
-    assert.deepEqual([...events].sort(), ['H_BAD', 'H_FUTURE']);
+    const lists = new Set(calls.filter((u) => !u.searchParams.get('content')).map((u) => u.searchParams.get('event')).filter(Boolean));
+    assert.deepEqual([...lists].sort(), ['H_BAD', 'H_FUTURE']);
+    // Una ficha por carrera con resultados (A y B), con el mejor clasificado
+    const details = calls.filter((u) => u.searchParams.get('content') === 'detail');
+    assert.deepEqual(details.map((u) => [u.searchParams.get('event'), u.searchParams.get('idp')]).sort(),
+      [['HD1_B', 'B1'], ['H_A', 'A1']]);
+    assert.deepEqual((await db(`SELECT place FROM events WHERE code = 'H_A'`))[0].place, 'Valencia 2025');
+    assert.equal((await db(`SELECT count(*)::int AS n FROM details`))[0].n, 0); // ficha incompleta: no se cachea
 
-    // Sin tiempo: no empieza ningún evento
+    // Sin tiempo: no empieza ningún evento (ni pide sedes)
+    await db(`UPDATE events SET place = NULL`);
     calls.length = 0;
     await run(parseArgs(['--season', '8', '--rate', '1000', '--max-minutes', '0.000001']), db);
     assert.ok(!calls.some((u) => u.searchParams.get('event')));

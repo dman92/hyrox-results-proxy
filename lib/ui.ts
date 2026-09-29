@@ -159,7 +159,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function hitsHtml(list, from) {
     return list.map(function (h, k) {
       var i = from + k;
-      var where = h.eventLabel || [h.city, h.year].filter(Boolean).join(' ') || '';
+      var where = [h.place || [h.city, h.year].filter(Boolean).join(' '), h.eventLabel].filter(Boolean).join(' · ');
       var extra = [h.division || h.event, h.season, h.ageGroup, h.nationality].filter(Boolean).join(' · ');
       return '<button class="hit" data-i="' + i + '">' +
         '<b>' + (h.rank ? '<span style="color:var(--muted)">#' + h.rank + '</span> ' : '') + esc(h.name) + '</b>' +
@@ -311,7 +311,7 @@ export const UI_HTML = String.raw`<!doctype html>
     $('races').innerHTML = shown.map(function (r) {
       return '<div class="race"><div class="row"><b>' + esc(r.name) + '</b>' +
         '<small class="' + r.status + '">' + STATUS[r.status] + (r.results ? ' · ' + r.results.toLocaleString() : '') + '</small></div>' +
-        '<small>' + esc(r.id) + '</small><div class="chips">' +
+        '<small>' + esc([r.place ? r.divisions[0].label : '', r.id].filter(Boolean).join(' · ')) + '</small><div class="chips">' +
         r.divisions.map(function (d) {
           var name = d.division || d.prefix;
           var sel = board && board.code === d.code ? ' sel' : '';
