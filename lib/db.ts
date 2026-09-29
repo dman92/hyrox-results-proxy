@@ -68,8 +68,10 @@ export const SCHEMA: string[] = [
   `DELETE FROM events WHERE strpos(code, '_OVERALL') > 0`,
   // Orden del desplegable de la web (sirve para ordenar carreras, que no traen fecha)
   `ALTER TABLE events ADD COLUMN IF NOT EXISTS position integer`,
-  // Sede y año ("Valencia 2025"), sacados de la primera ficha de detalle que se consulta
+  // Sede: el <optgroup> del desplegable de la web ("2026 Stockholm")
   `ALTER TABLE events ADD COLUMN IF NOT EXISTS place text`,
+  // Versiones anteriores marcaban con '' las carreras cuya ficha no traía sede
+  `UPDATE events SET place = NULL WHERE place = ''`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,
@@ -111,20 +113,27 @@ export function normalizeName(name: string): string {
 
 // --------------------------------------------------------------------------- ingesta
 
-export interface EventRow { code: string; label: string; division: Division | null }
+export interface EventRow {
+  code: string;
+  label: string;
+  division: Division | null;
+  /** Sede: el <optgroup> del desplegable de la web ("2026 Stockholm"). */
+  place: string | null;
+}
 
 export async function upsertEvents(db: Query, season: string, events: EventRow[]): Promise<void> {
   if (events.length === 0) return;
   const known = (await db(`SELECT 1 FROM events WHERE season = $1 LIMIT 1`, [season])).length > 0;
   await db(
-    `INSERT INTO events (code, season, label, division, position, refresh)
-     SELECT c, s, l, d, p, $6::boolean
-     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::integer[]) AS t(c, s, l, d, p)
+    `INSERT INTO events (code, season, label, division, position, place, refresh)
+     SELECT c, s, l, d, p, pl, $7::boolean
+     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::integer[], $6::text[]) AS t(c, s, l, d, p, pl)
      ON CONFLICT (code) DO UPDATE SET
-       label = EXCLUDED.label, division = EXCLUDED.division, position = EXCLUDED.position`,
+       label = EXCLUDED.label, division = EXCLUDED.division, position = EXCLUDED.position,
+       place = coalesce(EXCLUDED.place, events.place)`,
     [
       events.map((e) => e.code), events.map(() => season), events.map((e) => e.label),
-      events.map((e) => e.division), events.map((_, i) => i), known,
+      events.map((e) => e.division), events.map((_, i) => i), events.map((e) => e.place), known,
     ],
   );
 }
@@ -291,21 +300,15 @@ export interface RaceDivision {
 }
 
 export interface Race {
-  /** Parte común de los códigos de sus divisiones (H_X, HPRO_X, HD_X -> X). */
+  /** La sede si se conoce; si no, la parte común de los códigos (H_X, HPRO_X -> X). */
   id: string;
   season: string;
-  /** Sede y año si ya se conocen (de una ficha de detalle); si no, la etiqueta de la web. */
+  /** La sede ("2026 Stockholm"); si aún no se conoce, la etiqueta de la web. */
   name: string;
   place: string | null;
   status: EventStatus;
   results: number;
   divisions: RaceDivision[];
-}
-
-/** "HYROX - Saturday" -> "Saturday"; sin " - ", null. */
-export function labelDay(label: string): string | null {
-  const i = label.lastIndexOf(' - ');
-  return i >= 0 ? label.slice(i + 3).trim() || null : null;
 }
 
 function statusOf(rowCount: number | null): EventStatus {
@@ -316,7 +319,7 @@ function statusOf(rowCount: number | null): EventStatus {
 /** Cuenta de eventos y resultados por temporada, de la más reciente a la más antigua. */
 export async function listSeasons(db: Query): Promise<{ season: string; races: number; results: number }[]> {
   const rows = await db(
-    `SELECT season, count(DISTINCT substr(code, strpos(code, '_') + 1))::int AS races,
+    `SELECT season, count(DISTINCT coalesce(place, substr(code, strpos(code, '_') + 1)))::int AS races,
             coalesce(sum(row_count), 0)::int AS results
      FROM events GROUP BY season
      ORDER BY substring(season from '[0-9]+')::int DESC`,
@@ -325,9 +328,11 @@ export async function listSeasons(db: Query): Promise<{ season: string; races: n
 }
 
 /**
- * Carreras de una temporada. La web lista cada división como un evento aparte
- * (H_X, HPRO_X, HD_X...); aquí se agrupan por la parte común del código.
- * Ordenadas como en el desplegable de la web, que no da fechas.
+ * Carreras de una temporada, agrupadas por sede (el <optgroup> del desplegable de la
+ * web). Una sede tiene varios eventos: uno por división y día (H_X "HYROX - Friday",
+ * HD1_Y "HYROX DOUBLES - Saturday"...), y no siempre comparten código. Sin sede
+ * conocida se agrupa por la parte común del código.
+ * En el orden del desplegable, que va de la más reciente a la más antigua.
  */
 export async function listRaces(db: Query, season: string): Promise<Race[]> {
   const rows = await db(
@@ -339,10 +344,11 @@ export async function listRaces(db: Query, season: string): Promise<Race[]> {
   for (const r of rows) {
     const code = r.code as string;
     const cut = code.indexOf('_');
-    const id = code.slice(cut + 1);
+    const place = (r.place as string | null) || null;
+    const id = place ?? code.slice(cut + 1);
     let race = races.get(id);
     if (!race) {
-      race = { id, season, name: r.label, place: null, status: 'pending', results: 0, divisions: [] };
+      race = { id, season, name: place ?? r.label, place, status: 'pending', results: 0, divisions: [] };
       races.set(id, race);
     }
     race.divisions.push({
@@ -354,14 +360,8 @@ export async function listRaces(db: Query, season: string): Promise<Race[]> {
       status: statusOf(r.row_count ?? null),
     });
     race.results += r.row_count ?? 0;
-    // '' = se miró la ficha y no traía sede (ver racesWithoutPlace)
-    race.place = race.place ?? (r.place || null);
-    // La etiqueta de la división open es la mejor candidata a nombre de la carrera
-    if (r.division === 'open') race.name = r.label;
   }
   for (const race of races.values()) {
-    // La etiqueta suele ser "HYROX - Saturday": el día distingue carreras de una misma sede
-    if (race.place) race.name = [race.place, labelDay(race.name)].filter(Boolean).join(' · ');
     const statuses = new Set(race.divisions.map((d) => d.status));
     race.status = statuses.has('available') ? 'available' : statuses.has('pending') ? 'pending' : 'upcoming';
   }
@@ -409,39 +409,6 @@ export async function eventResults(
     total,
     results: rows.map(toHit),
   };
-}
-
-const RACE_ID = `substr(code, strpos(code, '_') + 1)`;
-
-/**
- * Guarda la sede en todas las divisiones de la carrera de `code` (misma temporada y
- * misma parte común del código). Sale de las fichas de detalle: los listados no la
- * traen. `''` marca "mirado, sin sede" y se sobrescribe si luego aparece una.
- */
-export async function setEventPlace(db: Query, code: string, place: string): Promise<void> {
-  await db(
-    `UPDATE events SET place = $2
-     WHERE season = (SELECT season FROM events WHERE code = $1)
-       AND ${RACE_ID} = substr($1, strpos($1, '_') + 1)
-       AND (place IS NULL OR (place = '' AND $2 <> ''))`,
-    [code, place],
-  );
-}
-
-/** Una división con resultados de cada carrera sin sede, y el primer idp para pedir su ficha. */
-export async function racesWithoutPlace(db: Query, limit: number): Promise<{ code: string; season: string; idp: string }[]> {
-  return (await db(
-    `SELECT code, season, idp FROM (
-       SELECT DISTINCT ON (e.season, ${RACE_ID.replace(/code/g, 'e.code')}) e.code, e.season, r.idp
-       FROM events e
-       JOIN LATERAL (SELECT idp FROM results WHERE event_code = e.code ORDER BY rank NULLS LAST LIMIT 1) r ON true
-       WHERE e.place IS NULL AND e.row_count > 0
-       ORDER BY e.season, ${RACE_ID.replace(/code/g, 'e.code')}, (e.division = 'open') DESC NULLS LAST, e.code
-     ) t
-     ORDER BY substring(season from '[0-9]+')::int DESC, code
-     LIMIT $1`,
-    [limit],
-  )) as { code: string; season: string; idp: string }[];
 }
 
 // --------------------------------------------------------------------------- caché de detalle

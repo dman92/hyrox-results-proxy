@@ -4,8 +4,7 @@ import pg from 'pg';
 import { detailUrl, splitEventCode, type ListRow } from '../lib/hyrox.ts';
 import {
   eventResults, getCachedDetail, listRaces, listSeasons, migrate, nameTokens, normalizeName,
-  labelDay, pendingEventCodes, racesWithoutPlace, saveDetail, saveEventRows, searchDb, secToHms, setEventPlace,
-  upsertEvents, type Query,
+  pendingEventCodes, saveDetail, saveEventRows, searchDb, secToHms, upsertEvents, type Query,
 } from '../lib/db.ts';
 
 test('normalizeName ignora acentos, mayúsculas y orden', () => {
@@ -52,9 +51,9 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
 
     // Carga inicial de una temporada: nada se marca para refrescar
     await upsertEvents(db, 'season-8', [
-      { code: 'H_VAL25', label: '2025 Valencia', division: 'open' },
-      { code: 'HD_VAL25', label: '2025 Valencia', division: 'doubles' },
-      { code: 'HD1_VAL25', label: '2025 Valencia', division: null },
+      { code: 'H_VAL25', label: '2025 Valencia', division: 'open', place: null },
+      { code: 'HD_VAL25', label: '2025 Valencia', division: 'doubles', place: null },
+      { code: 'HD1_VAL25', label: '2025 Valencia', division: null, place: null },
     ]);
     assert.equal((await pendingEventCodes(db, 'season-8', 10)).size, 3);
 
@@ -76,10 +75,10 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
     // Un evento nuevo en una temporada ya volcada sí se refresca
     // (la ingesta siempre manda el desplegable entero, en su orden)
     await upsertEvents(db, 'season-8', [
-      { code: 'H_VAL25', label: '2025 Valencia', division: 'open' },
-      { code: 'HD_VAL25', label: '2025 Valencia', division: 'doubles' },
-      { code: 'HD1_VAL25', label: '2025 Valencia', division: null },
-      { code: 'H_BCN26', label: '2026 Barcelona', division: 'open' },
+      { code: 'H_VAL25', label: '2025 Valencia', division: 'open', place: null },
+      { code: 'HD_VAL25', label: '2025 Valencia', division: 'doubles', place: null },
+      { code: 'HD1_VAL25', label: '2025 Valencia', division: null, place: null },
+      { code: 'H_BCN26', label: '2026 Barcelona', division: 'open', place: null },
     ]);
     assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))], ['H_BCN26']);
     assert.equal((await db(`SELECT refresh FROM events WHERE code = 'H_VAL25'`))[0].refresh, false);
@@ -113,8 +112,8 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
 
     // Carreras: divisiones agrupadas por la parte común del código, en orden de la web
     await upsertEvents(db, 'season-9', [
-      { code: 'H_NEXT', label: '2026 Madrid', division: 'open' },
-      { code: 'HPRO_NEXT', label: '2026 Madrid', division: 'pro' },
+      { code: 'H_NEXT', label: '2026 Madrid', division: 'open', place: null },
+      { code: 'HPRO_NEXT', label: '2026 Madrid', division: 'pro', place: null },
     ]);
     await saveEventRows(db, 'season-9', 'H_NEXT', []); // aún sin resultados
     const races8 = await listRaces(db, 'season-8');
@@ -138,42 +137,32 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
       { season: 'season-8', races: 2, results: 5 },
     ]);
 
-    // Carreras sin sede: una división con resultados por carrera (la open si hay) y su mejor idp
-    assert.deepEqual(await racesWithoutPlace(db, 10), [{ code: 'H_VAL25', season: 'season-8', idp: 'ID1' }]);
-
-    // La sede sale de la ficha de detalle, se aplica a toda la carrera y pasa a ser su nombre
-    await setEventPlace(db, 'HD_VAL25', 'Valencia 2025');
-    await setEventPlace(db, 'HD_VAL25', 'Otra cosa'); // no sobrescribe
-    const [valPlaced] = await listRaces(db, 'season-8');
-    assert.equal(valPlaced.name, 'Valencia 2025');
-    assert.equal(valPlaced.place, 'Valencia 2025');
-    assert.deepEqual(
-      (await db(`SELECT code, place FROM events WHERE season = 'season-8'`)).map((r) => [r.code, r.place]).sort(),
-      [['HD1_VAL25', 'Valencia 2025'], ['HD_VAL25', 'Valencia 2025'], ['H_BCN26', null], ['H_VAL25', 'Valencia 2025']],
-    );
-    assert.deepEqual(await racesWithoutPlace(db, 10), []); // BCN26 no tiene resultados
-    assert.equal((await searchDb(db, 'smith', { limit: 1 }))[0].place, 'Valencia 2025');
-
-    // '' = ficha sin sede: no se vuelve a pedir, no cambia el nombre y se sobrescribe con una real
-    await saveEventRows(db, 'season-9', 'HPRO_NEXT', [row('N1', 'Kim, Soo', 3600)]);
-    assert.deepEqual(await racesWithoutPlace(db, 10), [{ code: 'HPRO_NEXT', season: 'season-9', idp: 'N1' }]);
-    await setEventPlace(db, 'HPRO_NEXT', '');
-    assert.deepEqual(await racesWithoutPlace(db, 10), []);
-    assert.equal((await listRaces(db, 'season-9'))[0].name, '2026 Madrid');
-    await setEventPlace(db, 'H_NEXT', 'Madrid 2026');
-    assert.equal((await listRaces(db, 'season-9'))[0].place, 'Madrid 2026');
-
-    // Con la etiqueta de día de la web, el nombre es "sede · día"
-    assert.equal(labelDay('HYROX - Saturday'), 'Saturday');
-    assert.equal(labelDay('2026 Madrid'), null);
-    await db(`UPDATE events SET label = 'HYROX - Saturday' WHERE code = 'H_VAL25'`);
-    assert.equal((await listRaces(db, 'season-8'))[0].name, 'Valencia 2025 · Saturday');
-    await db(`UPDATE events SET label = '2025 Valencia' WHERE code = 'H_VAL25'`);
+    // La sede viene del <optgroup> de la web; agrupa eventos de la misma sede aunque sus
+    // códigos no compartan sufijo, y no se pierde si una ingesta posterior no la trae
+    const withPlaces = [
+      { code: 'H_VAL25', label: 'HYROX - Saturday', division: 'open' as const, place: '2025 Valencia' },
+      { code: 'HD_VAL25', label: 'HYROX DOUBLES - Saturday', division: 'doubles' as const, place: '2025 Valencia' },
+      { code: 'HD1_VAL26', label: 'HYROX DOUBLES - Sunday', division: null, place: '2025 Valencia' },
+      { code: 'HD1_VAL25', label: '2025 Valencia', division: null, place: '2025 Valencia' as string | null },
+      { code: 'H_BCN26', label: '2026 Barcelona', division: 'open' as const, place: null },
+    ];
+    await upsertEvents(db, 'season-8', withPlaces);
+    // Una ingesta posterior que no trae la sede no la borra
+    await upsertEvents(db, 'season-8', withPlaces.map((e) => (e.code === 'HD1_VAL25' ? { ...e, place: null } : e)));
+    const races8b = await listRaces(db, 'season-8');
+    assert.deepEqual(races8b.map((r) => [r.id, r.name, r.divisions.map((d) => d.code).join(',')]), [
+      ['2025 Valencia', '2025 Valencia', 'H_VAL25,HD_VAL25,HD1_VAL26,HD1_VAL25'],
+      ['BCN26', '2026 Barcelona', 'H_BCN26'],
+    ]);
+    assert.equal((await db(`SELECT place FROM events WHERE code = 'HD1_VAL25'`))[0].place, '2025 Valencia'); // coalesce
+    assert.equal((await searchDb(db, 'smith', { limit: 1 }))[0].place, '2025 Valencia');
+    assert.deepEqual((await listSeasons(db)).find((x) => x.season === 'season-8'), { season: 'season-8', races: 2, results: 5 });
 
     // Clasificación de un evento, con filtro por nombre y paginación
     const board = await eventResults(db, 'H_VAL25', { limit: 2, offset: 0 });
     assert.equal(board.total, 3);
-    assert.equal(board.event!.label, '2025 Valencia');
+    assert.equal(board.event!.label, 'HYROX - Saturday');
+    assert.equal(board.event!.place, '2025 Valencia');
     assert.equal(board.event!.status, 'available');
     assert.deepEqual(board.results.map((r) => r.idp), ['ID1', 'ID2']);
     assert.equal(board.results[0].event, 'H_VAL25');

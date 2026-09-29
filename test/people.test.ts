@@ -17,12 +17,12 @@ test('búsqueda por persona en dobles contra Postgres', { skip: !url && 'sin TES
     await db('DROP TABLE IF EXISTS results, events, details');
     await migrate(db);
     await upsertEvents(db, 'season-8', [
-      { code: 'HD_A', label: 'HYROX DOUBLES - Saturday', division: 'doubles' },
-      { code: 'HD_B', label: 'HYROX DOUBLES - Saturday', division: 'doubles' },
-      { code: 'HDP_C', label: 'HYROX PRO DOUBLES', division: 'pro_doubles' },
-      { code: 'HDP_PARIS25_OVERALL_2', label: 'HYROX PRO DOUBLES - Overall', division: 'pro_doubles' },
+      { code: 'HD_A', label: 'HYROX DOUBLES - Saturday', division: 'doubles', place: null },
+      { code: 'HD_B', label: 'HYROX DOUBLES - Saturday', division: 'doubles', place: null },
+      { code: 'HDP_C', label: 'HYROX PRO DOUBLES', division: 'pro_doubles', place: null },
+      { code: 'HDP_PARIS25_OVERALL_2', label: 'HYROX PRO DOUBLES - Overall', division: 'pro_doubles', place: null },
     ]);
-    await upsertEvents(db, 'season-9', [{ code: 'HD_D', label: 'HYROX DOUBLES - Saturday', division: 'doubles' }]);
+    await upsertEvents(db, 'season-9', [{ code: 'HD_D', label: 'HYROX DOUBLES - Saturday', division: 'doubles', place: null }]);
     await saveEventRows(db, 'season-8', 'HD_A', [row('A1', 'Lucía Pérez García, David Manso Garcia', 4648)]);
     await saveEventRows(db, 'season-8', 'HD_B', [row('B1', 'Lucia Perez, David Manso', 5264)]);
     await saveEventRows(db, 'season-9', 'HD_D', [row('D1', 'David Manso, Lucia Perez', 4717)]);

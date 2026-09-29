@@ -174,11 +174,6 @@ async function get(url: string): Promise<string> {
   throw last;
 }
 
-/** Descarga una página de results.hyrox.com con los mismos reintentos que la API. */
-export function fetchPage(url: string): Promise<string> {
-  return get(url);
-}
-
 function buildQuery(params: Record<string, string | number | undefined>): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') q.set(k, String(v));
