@@ -94,7 +94,10 @@ Cada resultado se abre con `/api/athlete` igual que un hit de la búsqueda.
 ### `GET /api/health`
 
 Sin parámetros. Devuelve el commit y el mensaje del build desplegado, para saber
-qué versión está sirviendo sin tener que inferirlo del comportamiento.
+qué versión está sirviendo sin tener que inferirlo del comportamiento. Con base de
+datos, `database` dice cuánto ocupa (`totalMB`, `freePlanUsedPct` sobre los 0,5 GB del
+plan gratuito de Neon, tamaño y filas por tabla) y cómo va la ingesta (eventos
+completos y resultados por temporada).
 
 ### `GET /api/athlete`
 

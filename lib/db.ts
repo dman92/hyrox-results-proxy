@@ -411,6 +411,54 @@ export async function eventResults(
   };
 }
 
+// --------------------------------------------------------------------------- estado
+
+/** Límite de almacenamiento del plan gratuito de Neon. */
+export const NEON_FREE_BYTES = 512 * 1024 * 1024;
+
+export interface DbStats {
+  totalMB: number;
+  /** Porcentaje usado del plan gratuito de Neon (0,5 GB). */
+  freePlanUsedPct: number;
+  tables: Record<string, { mb: number; rows: number }>;
+  events: { total: number; completed: number; withResults: number };
+  seasons: { season: string; results: number }[];
+}
+
+const mb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
+
+/**
+ * Tamaño y volumen de la base de datos. Las filas de cada tabla son la estimación de
+ * Postgres (pg_class.reltuples), que no recorre la tabla: basta para vigilar el espacio.
+ */
+export async function dbStats(db: Query): Promise<DbStats> {
+  const [size] = await db(`SELECT pg_database_size(current_database())::bigint AS bytes`);
+  const tables = await db(
+    `SELECT c.relname AS name, pg_total_relation_size(c.oid)::bigint AS bytes,
+            greatest(c.reltuples, 0)::bigint AS rows
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname IN ('results', 'events', 'details')`,
+  );
+  const [events] = await db(
+    `SELECT count(*)::int AS total,
+            count(completed_at)::int AS completed,
+            count(*) FILTER (WHERE row_count > 0)::int AS with_results
+     FROM events`,
+  );
+  const seasons = await db(
+    `SELECT season, coalesce(sum(row_count), 0)::int AS results FROM events
+     GROUP BY season ORDER BY substring(season from '[0-9]+')::int DESC`,
+  );
+  const bytes = Number(size.bytes);
+  return {
+    totalMB: mb(bytes),
+    freePlanUsedPct: Math.round((bytes / NEON_FREE_BYTES) * 1000) / 10,
+    tables: Object.fromEntries(tables.map((t) => [t.name, { mb: mb(Number(t.bytes)), rows: Number(t.rows) }])),
+    events: { total: events.total, completed: events.completed, withResults: events.with_results },
+    seasons: seasons.map((r) => ({ season: r.season, results: r.results })),
+  };
+}
+
 // --------------------------------------------------------------------------- caché de detalle
 
 export async function getCachedDetail<T>(db: Query, key: string): Promise<T | null> {
