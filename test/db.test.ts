@@ -116,6 +116,10 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
       { code: 'HPRO_NEXT', label: '2026 Madrid', division: 'pro', place: null },
     ]);
     await saveEventRows(db, 'season-9', 'H_NEXT', []); // aún sin resultados
+    // Recién mirado: no se vuelve a pedir hasta pasadas 20 h
+    assert.deepEqual([...(await pendingEventCodes(db, 'season-9', 10))], ['HPRO_NEXT']);
+    await db(`UPDATE events SET checked_at = now() - interval '21 hours' WHERE code = 'H_NEXT'`);
+    assert.deepEqual([...(await pendingEventCodes(db, 'season-9', 10))].sort(), ['HPRO_NEXT', 'H_NEXT']);
     const races8 = await listRaces(db, 'season-8');
     assert.deepEqual(races8.map((r) => r.id), ['VAL25', 'BCN26']);
     const val = races8[0];

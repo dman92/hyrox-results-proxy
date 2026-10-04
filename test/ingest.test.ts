@@ -58,8 +58,9 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     assert.deepEqual(first, { rows: 151, failures: 1 });
     assert.ok(!calls.some((u) => u.searchParams.get('event') === 'H_A_OVERALL'), 'no debe tocar _OVERALL');
     assert.equal((await db('SELECT count(*)::int AS n FROM results'))[0].n, 151);
-    // El evento roto y el que aún no tiene resultados siguen pendientes
-    assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))].sort(), ['H_BAD', 'H_FUTURE']);
+    // El evento roto sigue pendiente; el que aún no tiene resultados, hasta mañana
+    assert.deepEqual([...(await pendingEventCodes(db, 'season-8', 10))], ['H_BAD']);
+    assert.equal((await db(`SELECT completed_at FROM events WHERE code = 'H_FUTURE'`))[0].completed_at, null);
     // La sede sale del <optgroup> del desplegable: ni una petición de más
     assert.ok(!calls.some((u) => u.searchParams.get('content') === 'detail'));
     assert.equal((await db(`SELECT place FROM events WHERE code = 'H_A'`))[0].place, '2025 Valencia');
@@ -70,12 +71,19 @@ test('ingesta completa a Postgres: reanuda, salta _OVERALL y aísla eventos roto
     assert.equal(hits[0].season, 'season-8');
     assert.equal(hits[0].nationality, 'ESP');
 
-    // Segunda ejecución: solo vuelve a mirar el evento roto y el futuro
+    // Segunda ejecución al día siguiente: solo vuelve a mirar el evento roto y el futuro
+    await db(`UPDATE events SET checked_at = now() - interval '1 day'`);
     calls.length = 0;
     const second = await run(args, db);
     assert.deepEqual(second, { rows: 0, failures: 1 });
     const lists = new Set(calls.map((u) => u.searchParams.get('event')).filter(Boolean));
     assert.deepEqual([...lists].sort(), ['H_BAD', 'H_FUTURE']);
+
+    // Otra más el mismo día: el futuro ya se miró, solo el roto
+    calls.length = 0;
+    await run(args, db);
+    const again = new Set(calls.map((u) => u.searchParams.get('event')).filter(Boolean));
+    assert.deepEqual([...again], ['H_BAD']);
 
     // Sin tiempo: no empieza ningún evento
     calls.length = 0;

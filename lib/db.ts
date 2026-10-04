@@ -72,6 +72,9 @@ export const SCHEMA: string[] = [
   `ALTER TABLE events ADD COLUMN IF NOT EXISTS place text`,
   // Versiones anteriores marcaban con '' las carreras cuya ficha no traía sede
   `UPDATE events SET place = NULL WHERE place = ''`,
+  // Última vez que se miró un evento. Las carreras futuras salen en el desplegable
+  // sin resultados: se miran como mucho una vez al día, no en cada ejecución.
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS checked_at timestamptz`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,
@@ -147,7 +150,7 @@ export async function pendingEventCodes(db: Query, season: string, refreshDays: 
   const rows = await db(
     `SELECT code FROM events
      WHERE season = $1 AND (
-       completed_at IS NULL
+       (completed_at IS NULL AND (checked_at IS NULL OR checked_at < now() - interval '20 hours'))
        OR (refresh AND first_seen_at > now() - make_interval(days => $2)
            AND completed_at < now() - interval '12 hours'))`,
     [season, refreshDays],
@@ -160,7 +163,7 @@ const BATCH = 2000;
 /**
  * Guarda todas las filas de un evento y lo marca como completo. Idempotente.
  * Un evento sin filas (carrera que aún no se ha celebrado) no se marca: sigue
- * pendiente y se vuelve a mirar en la próxima ejecución (1 petición).
+ * pendiente y se vuelve a mirar pasadas 20 h (1 petición).
  */
 export async function saveEventRows(db: Query, season: string, eventCode: string, rows: ListRow[]): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -189,7 +192,8 @@ export async function saveEventRows(db: Query, season: string, eventCode: string
     );
   }
   await db(
-    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2 WHERE code = $1`,
+    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2, checked_at = now()
+     WHERE code = $1`,
     [eventCode, rows.length],
   );
 }
