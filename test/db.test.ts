@@ -116,6 +116,10 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
       { code: 'HPRO_NEXT', label: '2026 Madrid', division: 'pro', place: null },
     ]);
     await saveEventRows(db, 'season-9', 'H_NEXT', []); // aún sin resultados
+    // Recién mirado: no se vuelve a pedir hasta pasadas 20 h
+    assert.deepEqual([...(await pendingEventCodes(db, 'season-9', 10))], ['HPRO_NEXT']);
+    await db(`UPDATE events SET checked_at = now() - interval '21 hours' WHERE code = 'H_NEXT'`);
+    assert.deepEqual([...(await pendingEventCodes(db, 'season-9', 10))].sort(), ['HPRO_NEXT', 'H_NEXT']);
     const races8 = await listRaces(db, 'season-8');
     assert.deepEqual(races8.map((r) => r.id), ['VAL25', 'BCN26']);
     const val = races8[0];
@@ -183,6 +187,29 @@ test('ingesta y búsqueda en Postgres', { skip: !url && 'sin TEST_DATABASE_URL' 
     const plan = (await db(`EXPLAIN SELECT 1 FROM results r WHERE (' ' || r.name_norm) LIKE '% ana%'`))
       .map((r) => r['QUERY PLAN']).join('\n');
     assert.match(plan, /results_name_trgm/);
+  } finally {
+    await db('DROP TABLE IF EXISTS results, events, details');
+    await pool.end();
+  }
+});
+
+test('dbStats: tamaño y volumen', { skip: !url && 'sin TEST_DATABASE_URL' }, async () => {
+  const { dbStats } = await import('../lib/db.ts');
+  const pool = new pg.Pool({ connectionString: url });
+  const db: Query = async (text, params = []) => (await pool.query(text, params)).rows;
+  try {
+    await db('DROP TABLE IF EXISTS results, events, details');
+    await migrate(db);
+    await upsertEvents(db, 'season-8', [{ code: 'H_A', label: 'HYROX', division: 'open', place: '2025 Valencia' }]);
+    await saveEventRows(db, 'season-8', 'H_A', [row('X1', 'Ruiz, Eva', 3900)]);
+    await db('ANALYZE');
+    const stats = await dbStats(db);
+    assert.ok(stats.totalMB > 0);
+    assert.ok(stats.freePlanUsedPct > 0 && stats.freePlanUsedPct < 100);
+    assert.deepEqual(Object.keys(stats.tables).sort(), ['details', 'events', 'results']);
+    assert.equal(stats.tables.results.rows, 1);
+    assert.deepEqual(stats.events, { total: 1, completed: 1, withResults: 1 });
+    assert.deepEqual(stats.seasons, [{ season: 'season-8', results: 1 }]);
   } finally {
     await db('DROP TABLE IF EXISTS results, events, details');
     await pool.end();

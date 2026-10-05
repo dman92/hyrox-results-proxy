@@ -1,12 +1,12 @@
 name: Ingesta HYROX
 
 # Vuelca los listados de results.hyrox.com a la base de datos (secret DATABASE_URL).
-# Cada ejecución trabaja ~4,5 h como mucho y la siguiente sigue donde lo dejó, así que
-# la carga inicial se completa sola en varias ejecuciones. Cuando ya está todo, cada
-# ejecución tarda 1-2 min: solo añade carreras nuevas y refresca las recientes.
+# Una vez al día y 40 min como mucho: en un repo privado GitHub da 2000 min/mes.
+# Si queda trabajo, la siguiente ejecución sigue donde lo dejó. Con todo ya volcado
+# tarda unos minutos: añade las carreras nuevas y refresca las recientes.
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '23 5 * * *'
   workflow_dispatch:
     inputs:
       seasons:
@@ -17,7 +17,7 @@ on:
         default: ''
       max_minutes:
         description: 'No empezar eventos nuevos pasados estos minutos'
-        default: '270'
+        default: '40'
 
 # Nunca dos a la vez: se pisarían el checkpoint y duplicarían peticiones.
 concurrency:
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -40,7 +40,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SEASONS: ${{ inputs.seasons || '7 8 9' }}
           MAX_EVENTS: ${{ inputs.max_events }}
-          MAX_MINUTES: ${{ inputs.max_minutes || '270' }}
+          MAX_MINUTES: ${{ inputs.max_minutes || '40' }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "::error::Falta el secret DATABASE_URL (Settings → Secrets and variables → Actions)"

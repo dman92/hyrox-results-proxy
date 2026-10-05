@@ -72,6 +72,9 @@ export const SCHEMA: string[] = [
   `ALTER TABLE events ADD COLUMN IF NOT EXISTS place text`,
   // Versiones anteriores marcaban con '' las carreras cuya ficha no traía sede
   `UPDATE events SET place = NULL WHERE place = ''`,
+  // Última vez que se miró un evento. Las carreras futuras salen en el desplegable
+  // sin resultados: se miran como mucho una vez al día, no en cada ejecución.
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS checked_at timestamptz`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,
@@ -147,7 +150,7 @@ export async function pendingEventCodes(db: Query, season: string, refreshDays: 
   const rows = await db(
     `SELECT code FROM events
      WHERE season = $1 AND (
-       completed_at IS NULL
+       (completed_at IS NULL AND (checked_at IS NULL OR checked_at < now() - interval '20 hours'))
        OR (refresh AND first_seen_at > now() - make_interval(days => $2)
            AND completed_at < now() - interval '12 hours'))`,
     [season, refreshDays],
@@ -160,7 +163,7 @@ const BATCH = 2000;
 /**
  * Guarda todas las filas de un evento y lo marca como completo. Idempotente.
  * Un evento sin filas (carrera que aún no se ha celebrado) no se marca: sigue
- * pendiente y se vuelve a mirar en la próxima ejecución (1 petición).
+ * pendiente y se vuelve a mirar pasadas 20 h (1 petición).
  */
 export async function saveEventRows(db: Query, season: string, eventCode: string, rows: ListRow[]): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH) {
@@ -189,7 +192,8 @@ export async function saveEventRows(db: Query, season: string, eventCode: string
     );
   }
   await db(
-    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2 WHERE code = $1`,
+    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2, checked_at = now()
+     WHERE code = $1`,
     [eventCode, rows.length],
   );
 }
@@ -408,6 +412,54 @@ export async function eventResults(
     },
     total,
     results: rows.map(toHit),
+  };
+}
+
+// --------------------------------------------------------------------------- estado
+
+/** Límite de almacenamiento del plan gratuito de Neon. */
+export const NEON_FREE_BYTES = 512 * 1024 * 1024;
+
+export interface DbStats {
+  totalMB: number;
+  /** Porcentaje usado del plan gratuito de Neon (0,5 GB). */
+  freePlanUsedPct: number;
+  tables: Record<string, { mb: number; rows: number }>;
+  events: { total: number; completed: number; withResults: number };
+  seasons: { season: string; results: number }[];
+}
+
+const mb = (bytes: number) => Math.round((bytes / 1024 / 1024) * 10) / 10;
+
+/**
+ * Tamaño y volumen de la base de datos. Las filas de cada tabla son la estimación de
+ * Postgres (pg_class.reltuples), que no recorre la tabla: basta para vigilar el espacio.
+ */
+export async function dbStats(db: Query): Promise<DbStats> {
+  const [size] = await db(`SELECT pg_database_size(current_database())::bigint AS bytes`);
+  const tables = await db(
+    `SELECT c.relname AS name, pg_total_relation_size(c.oid)::bigint AS bytes,
+            greatest(c.reltuples, 0)::bigint AS rows
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname IN ('results', 'events', 'details')`,
+  );
+  const [events] = await db(
+    `SELECT count(*)::int AS total,
+            count(completed_at)::int AS completed,
+            count(*) FILTER (WHERE row_count > 0)::int AS with_results
+     FROM events`,
+  );
+  const seasons = await db(
+    `SELECT season, coalesce(sum(row_count), 0)::int AS results FROM events
+     GROUP BY season ORDER BY substring(season from '[0-9]+')::int DESC`,
+  );
+  const bytes = Number(size.bytes);
+  return {
+    totalMB: mb(bytes),
+    freePlanUsedPct: Math.round((bytes / NEON_FREE_BYTES) * 1000) / 10,
+    tables: Object.fromEntries(tables.map((t) => [t.name, { mb: mb(Number(t.bytes)), rows: Number(t.rows) }])),
+    events: { total: events.total, completed: events.completed, withResults: events.with_results },
+    seasons: seasons.map((r) => ({ season: r.season, results: r.results })),
   };
 }
 

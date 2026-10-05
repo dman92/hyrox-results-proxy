@@ -94,7 +94,10 @@ Cada resultado se abre con `/api/athlete` igual que un hit de la búsqueda.
 ### `GET /api/health`
 
 Sin parámetros. Devuelve el commit y el mensaje del build desplegado, para saber
-qué versión está sirviendo sin tener que inferirlo del comportamiento.
+qué versión está sirviendo sin tener que inferirlo del comportamiento. Con base de
+datos, `database` dice cuánto ocupa (`totalMB`, `freePlanUsedPct` sobre los 0,5 GB del
+plan gratuito de Neon, tamaño y filas por tabla) y cómo va la ingesta (eventos
+completos y resultados por temporada).
 
 ### `GET /api/athlete`
 
@@ -135,10 +138,11 @@ en vivo la primera vez que alguien abre una carrera y se guardan en `details`.
 - **Espacio**: ~300 MB por millón de resultados. Las temporadas 7-9 caben en los
   0,5 GB del plan gratuito; cuando no quepan, borra la más antigua:
   `DELETE FROM results WHERE season = 'season-7'; DELETE FROM events WHERE season = 'season-7';`
-- **Ingesta automática**: `.github/workflows/ingest.yml` se ejecuta cada 6 h con el
-  secret `DATABASE_URL`. Cada ejecución trabaja como mucho ~4,5 h y la siguiente
-  sigue donde lo dejó; con todo volcado, tarda 1-2 min (carreras nuevas + refresco
-  de las recientes durante 10 días). También se lanza a mano desde Actions →
+- **Ingesta automática**: `.github/workflows/ingest.yml` se ejecuta una vez al día
+  con el secret `DATABASE_URL`. Cada ejecución trabaja como mucho 40 min (un repo
+  privado tiene 2000 min/mes de Actions) y la siguiente sigue donde lo dejó; con todo
+  volcado tarda unos minutos (carreras nuevas + refresco de las recientes durante
+  10 días). Las carreras futuras, aún sin resultados, se miran una vez al día. También se lanza a mano desde Actions →
   Ingesta HYROX → Run workflow (con `max_events: 2` para probar).
 - **Ingesta local**: `DATABASE_URL=… npm run ingest -- --season 8`. Sin
   `DATABASE_URL` escribe `data/<season>.jsonl` como antes.
