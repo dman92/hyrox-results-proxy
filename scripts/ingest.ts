@@ -22,7 +22,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import * as cheerio from 'cheerio';
 import { parseListRows, splitEventCode, USER_AGENT, type ListRow } from '../lib/hyrox.ts';
-import { getDb, migrate, pendingEventCodes, saveEventRows, upsertEvents, type Query } from '../lib/db.ts';
+import { getDb, migrate, pendingEventCodes, saveEventRows, upsertEvents, type EventRowWithSex, type Query } from '../lib/db.ts';
 
 const BASE = 'https://results.hyrox.com';
 const PAGE_SIZE = 100;
@@ -106,11 +106,12 @@ async function listEvents(season: string, rate: number): Promise<ListedEvent[]> 
 }
 
 /** Descarga todas las páginas de un evento. Devuelve cada idp una sola vez. */
-async function fetchEventRows(season: string, code: string, minInterval: number): Promise<ListRow[]> {
+async function fetchEventRows(season: string, code: string, minInterval: number, sex?: 'M' | 'W'): Promise<ListRow[]> {
   const rows: ListRow[] = [];
   const seen = new Set<string>();
+  const sexFilter = sex ? `&search%5Bsex%5D=${sex}` : '';
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const url = `${BASE}/${season}/?pid=list&event=${code}&num_results=${PAGE_SIZE}&page=${page}`;
+    const url = `${BASE}/${season}/?pid=list&event=${code}&num_results=${PAGE_SIZE}&page=${page}${sexFilter}`;
     const parsed = parseListRows(await get(url, minInterval));
     if (parsed.length === 0) break;
 
@@ -134,10 +135,29 @@ async function fetchEventRows(season: string, code: string, minInterval: number)
 }
 
 /** Dónde se guarda cada evento y cómo se sabe qué falta. */
+/** Elite 15 (individual y dobles): "HYROX ELITE 15 - Thursday", "HYROX ELITE 15 DOUBLES - Friday". */
+export function isEliteEvent(event: { label: string }): boolean {
+  return /\bELITE\b/i.test(event.label);
+}
+
+/**
+ * Sexo de cada idp de un evento elite. El listado no lo trae, pero la web lo
+ * filtra: se pide el evento con sexo M y con W (son pocas filas). Si el filtro
+ * no hiciera nada, los dos listados coincidirían: entonces no se marca a nadie.
+ */
+async function fetchSexes(season: string, code: string, minInterval: number): Promise<Map<string, 'M' | 'W'>> {
+  const men = new Set((await fetchEventRows(season, code, minInterval, 'M')).map((r) => r.idp));
+  const women = new Set((await fetchEventRows(season, code, minInterval, 'W')).map((r) => r.idp));
+  const sexes = new Map<string, 'M' | 'W'>();
+  for (const idp of men) if (!women.has(idp)) sexes.set(idp, 'M');
+  for (const idp of women) if (!men.has(idp)) sexes.set(idp, 'W');
+  return sexes;
+}
+
 export interface Sink {
   describe(season: string): string;
   pending(season: string, events: ListedEvent[]): Promise<ListedEvent[]>;
-  save(season: string, event: ListedEvent, rows: ListRow[]): Promise<void>;
+  save(season: string, event: ListedEvent, rows: EventRowWithSex[]): Promise<void>;
 }
 
 export function dbSink(db: Query, refreshDays: number): Sink {
@@ -150,7 +170,7 @@ export function dbSink(db: Query, refreshDays: number): Sink {
     },
     // Todo el evento de una vez al final: si se cancela a mitad no queda a medias,
     // y el upsert hace que repetirlo no duplique nada.
-    save: (season, event, rows) => saveEventRows(db, season, event.code, rows),
+    save: (season, event, rows) => saveEventRows(db, season, event.code, rows, { sexChecked: isEliteEvent(event) }),
   };
 }
 
@@ -199,9 +219,13 @@ export async function run(args: Args, injectedDb?: Query | null): Promise<{ rows
         console.log(`\nTiempo agotado (--max-minutes ${args.maxMinutes}): la próxima ejecución sigue desde aquí.`);
         return summary();
       }
-      let rows: ListRow[];
+      let rows: EventRowWithSex[];
       try {
         rows = await fetchEventRows(season, event.code, minInterval);
+        if (rows.length > 0 && isEliteEvent(event)) {
+          const sexes = await fetchSexes(season, event.code, minInterval);
+          rows = rows.map((r) => ({ ...r, sex: sexes.get(r.idp) ?? null }));
+        }
         await sink.save(season, event, rows);
         consecutiveFailures = 0;
       } catch (err) {
