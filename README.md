@@ -91,6 +91,22 @@ Solo con base de datos: son los eventos que ha descubierto la ingesta.
 
 Cada resultado se abre con `/api/athlete` igual que un hit de la búsqueda.
 
+### `GET /api/elite`
+
+Solo con base de datos. Últimas carreras Elite 15 (individual y dobles) con todos sus
+resultados, de la más reciente a la más antigua. `?limit=` carreras (def. 5, máx. 20).
+
+```
+/api/elite?limit=5
+→ { count, races: [ { id, season, name: "2026 Stockholm", place,
+      divisions: [ { code, label: "HYROX ELITE 15 - Thursday", doubles: false,
+                     results: [ { …hit de /api/search…, sex: "M", position: 1 } ] } ] } ] }
+```
+
+El listado de la web no trae el sexo: la ingesta lo saca pidiendo cada evento elite
+filtrado por hombres y por mujeres. `position` es el puesto dentro de su sexo por
+tiempo (`null` sin tiempo). Cada resultado se abre con `/api/athlete`.
+
 ### `GET /api/health`
 
 Sin parámetros. Devuelve el commit y el mensaje del build desplegado, para saber

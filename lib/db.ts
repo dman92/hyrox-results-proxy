@@ -75,6 +75,13 @@ export const SCHEMA: string[] = [
   // Última vez que se miró un evento. Las carreras futuras salen en el desplegable
   // sin resultados: se miran como mucho una vez al día, no en cada ejecución.
   `ALTER TABLE events ADD COLUMN IF NOT EXISTS checked_at timestamptz`,
+  // Sexo (M/W), solo en eventos elite: el listado no lo trae y la ingesta lo
+  // saca filtrando por sexo (ver scripts/ingest.ts fetchSexes)
+  `ALTER TABLE results ADD COLUMN IF NOT EXISTS sex text`,
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS sex_checked boolean NOT NULL DEFAULT false`,
+  // Eventos elite volcados antes de saber el sexo: se vuelven a descargar una vez
+  `UPDATE events SET completed_at = NULL, checked_at = NULL
+   WHERE label ILIKE '%ELITE%' AND completed_at IS NOT NULL AND NOT sex_checked`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,
@@ -160,22 +167,27 @@ export async function pendingEventCodes(db: Query, season: string, refreshDays: 
 
 const BATCH = 2000;
 
+export type EventRowWithSex = ListRow & { sex?: 'M' | 'W' | null };
+
 /**
  * Guarda todas las filas de un evento y lo marca como completo. Idempotente.
  * Un evento sin filas (carrera que aún no se ha celebrado) no se marca: sigue
  * pendiente y se vuelve a mirar pasadas 20 h (1 petición).
  */
-export async function saveEventRows(db: Query, season: string, eventCode: string, rows: ListRow[]): Promise<void> {
+export async function saveEventRows(
+  db: Query, season: string, eventCode: string, rows: EventRowWithSex[], opts: { sexChecked?: boolean } = {},
+): Promise<void> {
   for (let i = 0; i < rows.length; i += BATCH) {
     const b = rows.slice(i, i + BATCH);
     await db(
-      `INSERT INTO results (event_code, idp, season, name, name_norm, nationality, age_group, city, year, rank, total_sec)
+      `INSERT INTO results (event_code, idp, season, name, name_norm, nationality, age_group, city, year, rank, total_sec, sex)
        SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
-                                $8::text[], $9::smallint[], $10::integer[], $11::integer[])
+                                $8::text[], $9::smallint[], $10::integer[], $11::integer[], $12::text[])
        ON CONFLICT (event_code, idp) DO UPDATE SET
          name = EXCLUDED.name, name_norm = EXCLUDED.name_norm, nationality = EXCLUDED.nationality,
          age_group = EXCLUDED.age_group, city = EXCLUDED.city, year = EXCLUDED.year,
-         rank = EXCLUDED.rank, total_sec = EXCLUDED.total_sec`,
+         rank = EXCLUDED.rank, total_sec = EXCLUDED.total_sec,
+         sex = coalesce(EXCLUDED.sex, results.sex)`,
       [
         eventCode,
         b.map((r) => r.idp),
@@ -188,13 +200,15 @@ export async function saveEventRows(db: Query, season: string, eventCode: string
         b.map((r) => r.year),
         b.map((r) => r.rank),
         b.map((r) => r.totalSec),
+        b.map((r) => r.sex ?? null),
       ],
     );
   }
   await db(
-    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2, checked_at = now()
+    `UPDATE events SET completed_at = CASE WHEN $2 > 0 THEN now() END, row_count = $2, checked_at = now(),
+       sex_checked = sex_checked OR ($2 > 0 AND $3)
      WHERE code = $1`,
-    [eventCode, rows.length],
+    [eventCode, rows.length, opts.sexChecked ?? false],
   );
 }
 
@@ -476,4 +490,78 @@ export async function saveDetail(db: Query, key: string, data: unknown): Promise
      ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`,
     [key, JSON.stringify(data)],
   );
+}
+
+// --------------------------------------------------------------------------- elite 15
+
+export interface EliteHit extends DbHit {
+  /** 'M' / 'W', o null si la ingesta no pudo saberlo. */
+  sex: 'M' | 'W' | null;
+  /** Puesto dentro de su sexo (por tiempo); null sin tiempo (DNF). */
+  position: number | null;
+}
+
+export interface EliteDivision {
+  code: string;
+  label: string;
+  doubles: boolean;
+  results: EliteHit[];
+}
+
+export interface EliteRace {
+  id: string;
+  season: string;
+  name: string;
+  place: string | null;
+  divisions: EliteDivision[];
+}
+
+/**
+ * Últimas carreras Elite 15 con resultados: individual y dobles, cada fila con
+ * su sexo y su puesto dentro de él. De la más reciente a la más antigua
+ * (temporada, y dentro de ella el orden del desplegable de la web).
+ */
+export async function eliteRaces(db: Query, limit: number): Promise<EliteRace[]> {
+  const events = await db(
+    `SELECT code, season, label, place FROM events
+     WHERE label ILIKE '%ELITE%' AND row_count > 0
+     ORDER BY substring(season from '[0-9]+')::int DESC, position NULLS LAST, code`,
+  );
+  const races: EliteRace[] = [];
+  const byId = new Map<string, EliteRace>();
+  for (const e of events) {
+    const code = e.code as string;
+    const id = `${e.season}|${e.place || code.slice(code.indexOf('_') + 1)}`;
+    let race = byId.get(id);
+    if (!race) {
+      if (races.length >= limit) continue;
+      race = { id, season: e.season, name: e.place || e.label, place: e.place || null, divisions: [] };
+      byId.set(id, race);
+      races.push(race);
+    }
+    race.divisions.push({ code, label: e.label, doubles: /DOUBLES/i.test(e.label), results: [] });
+  }
+  const divisions = new Map(races.flatMap((r) => r.divisions.map((d) => [d.code, d] as const)));
+  if (divisions.size === 0) return [];
+
+  const rows = await db(
+    `SELECT r.idp, r.event_code, r.season, r.name, r.nationality, r.age_group, r.city, r.year,
+            r.rank, r.total_sec, r.sex, e.label, e.division, e.place
+     FROM results r JOIN events e ON e.code = r.event_code
+     WHERE r.event_code = ANY($1::text[])
+     ORDER BY r.total_sec NULLS LAST, r.rank NULLS LAST, r.name`,
+    [[...divisions.keys()]],
+  );
+  const counters = new Map<string, number>();
+  for (const r of rows) {
+    const sex = r.sex === 'M' || r.sex === 'W' ? r.sex : null;
+    let position: number | null = null;
+    if (r.total_sec != null) {
+      const key = `${r.event_code}|${sex ?? ''}`;
+      position = (counters.get(key) ?? 0) + 1;
+      counters.set(key, position);
+    }
+    divisions.get(r.event_code)!.results.push({ ...toHit(r), sex, position });
+  }
+  return races;
 }
