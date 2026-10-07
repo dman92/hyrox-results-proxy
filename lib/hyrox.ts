@@ -78,13 +78,21 @@ export interface RaceDetail {
   validation: { runSumMatchesRunTotal: boolean | null; splitCount: number; ok: boolean };
 }
 
-/** "00:59:17" | "59:17" -> segundos */
+/**
+ * "00:59:17" | "59:17" -> segundos. Elite 15 trae centésimas ("53:47.18"): se
+ * descartan, igual que el resto de splits, que la web ya da al segundo.
+ */
 export function hmsToSec(t: string): number | null {
-  const m = t.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2})$/);
+  const m = t.trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,]\d+)?$/);
   if (!m) return null;
   const [, h, mm, ss] = m;
   return (parseInt(h ?? '0', 10) * 3600) + (parseInt(mm, 10) * 60) + parseInt(ss, 10);
 }
+
+const STATION_KEYS = [
+  'ski_erg', 'sled_push', 'sled_pull', 'burpee_broad_jump',
+  'row_erg', 'farmers_carry', 'sandbag_lunges', 'wall_balls',
+];
 
 /** Etiqueta de mika -> clave estable, insensible a que cambien las distancias. */
 export function canonicalKey(label: string): string {
@@ -334,7 +342,7 @@ export function parseDetail(html: string, idp: string, division: Division): Race
     // Splits: etiqueta | tiempo | puesto
     if (cells.length >= 2) {
       const [label, time, place] = cells;
-      if (label && /^\d{1,2}:\d{2}:\d{2}$/.test(time ?? '')) {
+      if (label && /^\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?$/.test(time ?? '')) {
         const seconds = hmsToSec(time);
         if (seconds === null) return;
         splits.push({
@@ -398,6 +406,11 @@ export function parseDetail(html: string, idp: string, division: Division): Race
       ? null
       : Math.abs(runSum - runTotal) <= RUN_SUM_TOLERANCE_SEC;
 
+  // Elite 15 no tiene Roxzone aparte (va dentro de cada "Running N") ni Run Total:
+  // lo imprescindible son los 8 runs y las 8 estaciones.
+  const runCount = splits.filter((s) => /^run_\d+$/.test(s.key)).length;
+  const stationCount = splits.filter((s) => STATION_KEYS.includes(s.key)).length;
+
   return {
     idp,
     division,
@@ -418,8 +431,7 @@ export function parseDetail(html: string, idp: string, division: Division): Race
     validation: {
       runSumMatchesRunTotal,
       splitCount: splits.length,
-      // 8 runs + 8 estaciones + roxzone + total = 18 mínimo razonable
-      ok: splits.length >= 18 && runSumMatchesRunTotal !== false && athlete !== null,
+      ok: runCount >= 8 && stationCount >= 8 && runSumMatchesRunTotal !== false && athlete !== null,
     },
   };
 }

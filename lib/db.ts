@@ -82,6 +82,11 @@ export const SCHEMA: string[] = [
   // Eventos elite volcados antes de saber el sexo: se vuelven a descargar una vez
   `UPDATE events SET completed_at = NULL, checked_at = NULL
    WHERE label ILIKE '%ELITE%' AND completed_at IS NOT NULL AND NOT sex_checked`,
+  // Eventos elite volcados cuando los tiempos con centésimas ("53:47.18") no se
+  // leían: ninguna fila tiene total. Se vuelven a descargar hasta que lo tengan.
+  `UPDATE events SET completed_at = NULL, checked_at = NULL
+   WHERE label ILIKE '%ELITE%' AND completed_at IS NOT NULL AND row_count > 0
+     AND NOT EXISTS (SELECT 1 FROM results r WHERE r.event_code = events.code AND r.total_sec IS NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS details (
      cache_key  text PRIMARY KEY,            -- la URL de detalle de results.hyrox.com
      data       jsonb NOT NULL,

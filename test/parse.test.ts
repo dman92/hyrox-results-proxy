@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseSearch, parseDetail, hmsToSec, canonicalKey, dedupeNameParts } from '../lib/hyrox.ts';
+import { parseSearch, parseDetail, parseListRows, hmsToSec, canonicalKey, dedupeNameParts } from '../lib/hyrox.ts';
 
 const fx = (n: string) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8');
 
@@ -9,6 +9,9 @@ test('hmsToSec', () => {
   assert.equal(hmsToSec('00:59:17'), 3557);
   assert.equal(hmsToSec('04:16'), 256);
   assert.equal(hmsToSec('basura'), null);
+  // Elite 15: centésimas, que se descartan
+  assert.equal(hmsToSec('53:47.18'), 3227);
+  assert.equal(hmsToSec('00:56:59.49'), 3419);
 });
 
 test('canonicalKey normaliza etiquetas de mika', () => {
@@ -151,4 +154,55 @@ test('dedupeNameParts colapsa miembros repetidos del origen', () => {
   );
   // "Apellido, Nombre" de individual tampoco: son dos segmentos distintos.
   assert.equal(dedupeNameParts('Weeks, Lauren'), 'Weeks, Lauren');
+});
+
+// Elite 15 tal cual lo sirve la web (recortado): sin fixtures, para que corra siempre.
+// Tiempos con centésimas, puesto por sexo y una columna "Workout" antes del total.
+const eliteListRow = (rank: number, idp: string, name: string, time: string) => `
+  <li class=" list-group-item row">
+    <div class="col-xs-12 col-sm-12 col-md-5 list-field-wrap"><div class="row">
+      <div class=" list-field type-place place-primary numeric">${rank}</div>
+      <div class=" list-field type-nation_flag place-primary"><span class="nation__labelled-icon">
+        <img class="nation__icon" alt="USA" title="USA"> <span class="nation__abbr">USA</span></span></div>
+      <h4 class=" list-field type-fullname"><a href="https://results.hyrox.com/season-8/?content=detail&amp;fpid=list&amp;pid=list&amp;idp=${idp}&amp;lang=EN_CAP&amp;event=HE_X">${name} (USA)</a></h4>
+    </div></div>
+    <div class="col-xs-12 col-sm-12 col-md-7 list-field-wrap"><div class="pull-right"><div class="row">
+      <div class="rounds list-field type-eval"><div class="visible-xs-block visible-sm-block list-label">Workout</div>${time}</div>
+      <div class=" list-field type-actual_ranking_time"><div class="visible-xs-block visible-sm-block list-label">Time</div><span class="text-muted">–</span></div>
+      <div class="right list-field type-time time-ms"><div class="visible-xs-block visible-sm-block list-label">Totals</div>${time}</div>
+    </div></div></div>
+  </li>`;
+
+test('parseListRows (Elite 15) lee los totales con centésimas', () => {
+  const header = `<li class="right list-group row list-group-item list-group-header">
+    <div class=" list-field type-place field-place_all place-primary">Rank</div>
+    <div class="right list-field type-time field-time_finish_netto time-ms"><div class="list-label">Totals</div>Totals</div></li>`;
+  const rows = parseListRows(`<ul>${header}${eliteListRow(1, 'E1', 'Scott, Dylan', '53:47.18')}${eliteListRow(1, 'E2', 'McElheny, Alyssa', '56:59.49')}</ul>`);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((r) => [r.idp, r.rank, r.name, r.nationality, r.totalSec]), [
+    ['E1', 1, 'Scott, Dylan', 'USA', 3227],
+    ['E2', 1, 'McElheny, Alyssa', 'USA', 3419],
+  ]);
+});
+
+test('parseDetail (Elite 15) valida sin Roxzone ni Run Total', () => {
+  const labels = ['Running 1', '1000m SkiErg', 'Running 2', '50m Sled Push', 'Running 3', '50m Sled Pull',
+    'Running 4', '80m Burpee Broad Jump', 'Running 5', '1000m Row', 'Running 6', '200m Farmers Carry',
+    'Running 7', '100m Sandbag Lunges', 'Running 8', 'Wall Balls'];
+  const splitRows = labels.map((l, i) => `<tr><th>${l}</th><td>00:0${2 + (i % 3)}:4${i % 10}</td><td>${l.startsWith('Running') ? '–' : i}</td></tr>`).join('');
+  const html = `
+    <table><tr><th>Athlete</th><td>Scott, Dylan (USA)</td></tr></table>
+    <table><tr><th>Race</th><td>2026 Stockholm</td></tr><tr><th>Division</th><td>HYROX ELITE 15 - Thursday</td></tr></table>
+    <table><tr><th>Rank (M/W)</th><td>1</td></tr><tr><th>Overall Time</th><td>53:47.18</td></tr></table>
+    <table><tr><th>Split</th><th>Time</th><th>Place</th></tr>${splitRows}
+      <tr><th>Run Total</th><td>–</td><td>–</td></tr><tr><th>Best Run Lap</th><td>–</td><td>–</td></tr></table>
+    <table><tr><th>Split</th><th>Time Of Day</th><th>Time</th><th>Diff</th></tr>
+      <tr><td>1000m SkiErg In</td><td>20:34:51</td><td>00:02:42</td><td>02:42</td></tr></table>`;
+  const d = parseDetail(html, 'E1', 'pro');
+  assert.ok(d.validation.ok, `validación falló: ${JSON.stringify(d.validation)}`);
+  assert.equal(d.name, 'Scott, Dylan');
+  assert.equal(d.rankGender, 1);
+  assert.equal(d.splits.length, 17, '8 runs + 8 estaciones + total');
+  assert.equal(d.splits.find((s) => s.key === 'total')?.seconds, 3227);
+  assert.equal(d.splits.find((s) => s.key === 'roxzone'), undefined);
 });
