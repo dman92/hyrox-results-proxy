@@ -29,15 +29,23 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 300;            // 30.000 finishers por evento-división
 const OUT_DIR = 'data';
 const MAX_CONSECUTIVE_FAILURES = 5;
+// Tras MAX_CONSECUTIVE_FAILURES seguidos la web suele estar caída o frenándonos:
+// se espera y se sigue, hasta MAX_COOLDOWNS veces por ejecución.
+const MAX_COOLDOWNS = 3;
 
 export interface Args {
   seasons: string[]; rate: number; maxEvents: number | null; outDir: string;
   maxMinutes: number | null; refreshDays: number;
+  /** Pausa tras varios eventos fallidos seguidos. */
+  cooldownMinutes: number;
+  /** Espera base entre reintentos de una petición (2 s, 4 s...). */
+  retryDelayMs: number;
 }
 
 export function parseArgs(argv: string[]): Args {
   const seasons: string[] = [];
   let rate = 2, maxEvents: number | null = null, outDir = OUT_DIR, maxMinutes: number | null = null, refreshDays = 10;
+  let cooldownMinutes = 10, retryDelayMs = 2_000;
   for (let i = 0; i < argv.length; i++) {
     const next = () => argv[++i];
     if (argv[i] === '--season') seasons.push(`season-${next().replace(/^season-/, '')}`);
@@ -46,12 +54,15 @@ export function parseArgs(argv: string[]): Args {
     else if (argv[i] === '--out') outDir = next();
     else if (argv[i] === '--max-minutes') maxMinutes = Number(next());
     else if (argv[i] === '--refresh-days') refreshDays = Number(next());
+    else if (argv[i] === '--cooldown-minutes') cooldownMinutes = Number(next());
+    else if (argv[i] === '--retry-delay-ms') retryDelayMs = Number(next());
   }
   if (seasons.length === 0) throw new Error('Falta --season <n> (repetible)');
-  return { seasons, rate, maxEvents, outDir, maxMinutes, refreshDays };
+  return { seasons, rate, maxEvents, outDir, maxMinutes, refreshDays, cooldownMinutes, retryDelayMs };
 }
 
 let requestCount = 0;
+let retryDelayMs = 2_000;
 async function get(url: string, minIntervalMs: number): Promise<string> {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const started = Date.now();
@@ -67,14 +78,15 @@ async function get(url: string, minIntervalMs: number): Promise<string> {
         await sleep(Math.max(0, minIntervalMs - (Date.now() - started)));
         return body;
       }
-      if (![502, 503, 504, 429].includes(res.status)) {
+      // 500 incluido: results.hyrox.com lo devuelve a ratos cuando va saturada
+      if (![500, 502, 503, 504, 429].includes(res.status)) {
         throw new Error(`HTTP ${res.status} en ${url}`);
       }
     } catch (err) {
       if (attempt === 3) throw err;
     }
     // Su origen va lento o nos está frenando: aflojamos antes de reintentar.
-    await sleep(2_000 * attempt);
+    await sleep(retryDelayMs * attempt);
   }
   throw new Error(`sin respuesta tras 3 intentos: ${url}`);
 }
@@ -203,6 +215,8 @@ export async function run(args: Args, injectedDb?: Query | null): Promise<{ rows
   let totalRows = 0;
   let failures = 0;
   let consecutiveFailures = 0;
+  let cooldowns = 0;
+  retryDelayMs = args.retryDelayMs;
 
   const db = injectedDb === undefined ? getDb() : injectedDb;
   if (db) await migrate(db);
@@ -234,7 +248,14 @@ export async function run(args: Args, injectedDb?: Query | null): Promise<{ rows
         failures++;
         console.error(`\n  ${event.code}: ${(err as Error).message}`);
         if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          throw new Error(`${consecutiveFailures} eventos seguidos fallaron; paro. Último: ${(err as Error).message}`);
+          const resumeAt = Date.now() + args.cooldownMinutes * 60_000;
+          if (cooldowns >= MAX_COOLDOWNS || resumeAt > deadline) {
+            throw new Error(`${consecutiveFailures} eventos seguidos fallaron; paro. Último: ${(err as Error).message}`);
+          }
+          cooldowns++;
+          console.log(`\n  ${consecutiveFailures} eventos seguidos fallaron: pausa de ${args.cooldownMinutes} min y sigo (${cooldowns}/${MAX_COOLDOWNS}).`);
+          await sleep(args.cooldownMinutes * 60_000);
+          consecutiveFailures = 0;
         }
         continue;
       }

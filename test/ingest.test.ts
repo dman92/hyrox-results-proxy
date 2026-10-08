@@ -119,3 +119,42 @@ test('parseEventOptions: sede del optgroup, etiqueta de la opción y sin _OVERAL
   assert.deepEqual(parseEventOptions('<select name="event"><option value="H_X">HYROX</option></select>'),
     [{ code: 'H_X', label: 'HYROX', place: null }]);
 });
+
+test('caída de la web: tras 5 fallos seguidos pausa y sigue; si no vuelve, para',
+  { skip: !url && 'sin TEST_DATABASE_URL' }, async (t) => {
+  const pool = new pg.Pool({ connectionString: url });
+  const db: Query = async (text, params = []) => (await pool.query(text, params)).rows;
+  const codes = Array.from({ length: 25 }, (_, i) => `H_E${i}`);
+  let down = true;
+  let listCalls = 0;
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
+    const u = new URL(String(input));
+    const event = u.searchParams.get('event');
+    if (!event) return new Response(selectPage(codes));
+    if (down) {
+      // Cae para los 5 primeros eventos (3 intentos cada uno) y luego vuelve
+      if (++listCalls >= 15) down = false;
+      return new Response('error', { status: 500 });
+    }
+    return new Response(Number(u.searchParams.get('page') ?? 1) === 1 ? listPage(event, 1, 1) : '<ul></ul>');
+  });
+  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'error', () => {});
+  const args = parseArgs(['--season', '8', '--rate', '1000', '--cooldown-minutes', '0', '--retry-delay-ms', '0']);
+
+  try {
+    await db('DROP TABLE IF EXISTS results, events, details');
+    const result = await run(args, db);
+    assert.deepEqual(result, { rows: 20, failures: 5 });
+    assert.equal((await pendingEventCodes(db, 'season-8', 10)).size, 5);
+
+    // Caída que no se arregla: 3 pausas (20 fallos) y al quinto fallo siguiente para
+    down = true;
+    listCalls = -Infinity;
+    await db('DROP TABLE IF EXISTS results, events, details');
+    await assert.rejects(run(args, db), /eventos seguidos fallaron/);
+  } finally {
+    await db('DROP TABLE IF EXISTS results, events, details');
+    await pool.end();
+  }
+});
